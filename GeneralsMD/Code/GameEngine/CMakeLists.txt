@@ -1160,6 +1160,32 @@ set(GAMEENGINE_SRC
     Include/GameNetwork/GeneralsOnline/HTTP/HTTPRequest.h
     Include/GameNetwork/GeneralsOnline/NextGenTransport.h
     Include/GameNetwork/GeneralsOnline/PluginInterfaces.h
+    Include/GameNetwork/GeneralsOnline/Plugins/PluginABI.h
+    Include/GameNetwork/GeneralsOnline/Plugins/PluginManager.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/isteamnetworkingmessages.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/isteamnetworkingsockets.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/isteamnetworkingutils.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steam_api_common.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamclientpublic.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamnetworkingcustomsignaling.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamnetworkingsockets.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamnetworkingsockets_flat.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamnetworkingtypes.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamtypes.h
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamuniverse.h
+    Include/GameNetwork/GeneralsOnline/Vendor/sentry/sentry.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/curlver.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/easy.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/header.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/mprintf.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/options.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/stdcheaders.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/system.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/typecheck-gcc.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/urlapi.h
+    Include/GameNetwork/GeneralsOnline/Vendor/libcurl/websockets.h
     Source/GameNetwork/GeneralsOnline/DiscordRichPresence.cpp
     Source/GameNetwork/GeneralsOnline/NGMP_Helpers.cpp
     Source/GameNetwork/GeneralsOnline/NGMPGame.cpp
@@ -1178,6 +1204,7 @@ set(GAMEENGINE_SRC
     Source/GameNetwork/GeneralsOnline/NextGenTransport.cpp
     Source/GameNetwork/GeneralsOnline/NetworkBitstream.cpp
     Source/GameNetwork/GeneralsOnline/PluginInterfaces.cpp
+    Source/GameNetwork/GeneralsOnline/Plugins/PluginManager.cpp
 )
 
 if(RTS_GAMEMEMORY_ENABLE)
