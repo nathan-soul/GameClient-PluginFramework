@@ -1235,6 +1235,23 @@ if(NOT IS_VS6_BUILD)
     target_link_directories(z_gameengine PUBLIC
         Source/GameNetwork/GeneralsOnline/Vendor
     )
+
+    # Upstream links these through vcpkg's imported targets. With the vendored copies there is
+    # no target to depend on, so name the archives directly. GNS pulls in its own runtime
+    # dependencies, which are shipped alongside it.
+    set(GO_VENDOR "${CMAKE_CURRENT_SOURCE_DIR}/Source/GameNetwork/GeneralsOnline/Vendor")
+    target_link_libraries(z_gameengine PUBLIC
+        "${GO_VENDOR}/libcurl/libcurl.lib"
+        "${GO_VENDOR}/sentry/sentry.lib"
+        "${GO_VENDOR}/libsodium/libsodium.lib"
+        "${GO_VENDOR}/ValveNetworkingSockets/GameNetworkingSockets.lib"
+        "${GO_VENDOR}/ValveNetworkingSockets/abseil_dll.lib"
+        "${GO_VENDOR}/ValveNetworkingSockets/libprotobuf.lib"
+        "${GO_VENDOR}/ValveNetworkingSockets/libssl.lib"
+        "${GO_VENDOR}/ValveNetworkingSockets/libcrypto.lib"
+        "${GO_VENDOR}/ValveNetworkingSockets/steamwebrtc.lib"
+        "${GO_VENDOR}/ValveNetworkingSockets/webrtc-lite.lib"
+    )
 endif()
 
 target_precompile_headers(z_gameengine PRIVATE
