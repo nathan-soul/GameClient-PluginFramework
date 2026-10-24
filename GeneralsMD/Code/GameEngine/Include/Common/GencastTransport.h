@@ -77,6 +77,12 @@ public:
 
 	virtual void RegisterStream(const std::string& lobbyId, GencastRegisterCallback done) = 0;
 
+	// Direct mode has to tell the relay who is announcing and what the lobby looks like: the
+	// relay binds that player's password to the lobby on the first announce. Services mode
+	// ignores all of it, because Services already knows who you are.
+	virtual void SetAnnounceContext(long playerId, const std::string& mapName,
+		const std::string& playersCsv) {}
+
 	virtual void SubscribeLobbyUpdates(const std::string& lobbyId) = 0;
 	virtual void UnsubscribeLobbyUpdates() = 0;
 
@@ -87,3 +93,6 @@ public:
 	// keep it; it is never re-created per call.
 	static GencastTransport* Create();
 };
+
+// Defined in GencastTransportRelay.cpp; only meaningful in Direct mode.
+GencastTransport* CreateRelayGencastTransport();

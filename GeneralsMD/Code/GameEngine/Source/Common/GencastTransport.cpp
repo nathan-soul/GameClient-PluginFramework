@@ -89,14 +89,15 @@ GencastTransport* GencastTransport::Create()
 {
 	const EGencastMode mode = DetermineMode();
 
-	// The two implementations land next: Services in the transport-services unit, Direct in the
-	// transport-relay unit. Until then the resolved mode is logged once so it can be verified
-	// against a vanilla deployment and a custom one, and no caller consumes the result yet.
 	DEBUG_LOG(("[GENCAST] mode=%s", GencastModeName(mode)));
-	// DEBUG_LOG is compiled out in release builds, which leaves mode unreferenced there and
-	// C4189 is an error in this build.
-	(void)mode;
 
+	if (mode == EGencastMode::Direct)
+	{
+		return CreateRelayGencastTransport();
+	}
+
+	// Services mode keeps using the calls it already makes; there is no second implementation
+	// of today's behaviour to hand back yet.
 	return nullptr;
 }
 
