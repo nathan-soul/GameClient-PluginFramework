@@ -1459,8 +1459,6 @@ void WebSocket::Tick()
 													lobbySlot = LobbyObserverSlotForUserID(chatData.user_id);
 												}
 
-												// no admin chat in lobby
-												Color color = DetermineColorForChatMessage(EChatMessageType::CHAT_MESSAGE_TYPE_LOBBY, true, chatData.action, false, false, lobbySlot);
 												// Match local setup notice colors.
 												// System announcements stay neutral even when they come from the host;
 												// player chat keeps its per-slot color.
