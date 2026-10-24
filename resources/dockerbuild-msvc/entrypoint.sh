@@ -11,9 +11,29 @@ wineboot --init 2>/dev/null || true
 
 # MSVC paths - replicate what msvcenv.sh sets
 BASE="Z:\\build\\tools\\msvc"
-MSVCVER="14.50.35717"
+MSVCBASE_HOST="/build/tools/msvc/VC/Tools/MSVC"
 SDKVER="10.0.26100.0"
 ARCH="x86"
+
+# The image installs whatever VS 2022 toolset the installer currently serves, so the toolset
+# version must be discovered at run time. Hardcoding it broke every build the day the cached
+# image was rebuilt with a newer toolset (14.50 -> 14.51), with CMake reporting "not a full
+# path to an existing compiler tool".
+mapfile -t MSVC_TOOLSETS < <(ls -1 "$MSVCBASE_HOST" 2>/dev/null)
+if [ "${#MSVC_TOOLSETS[@]}" -ne 1 ]; then
+	echo "ERROR: expected exactly one MSVC toolset under $MSVCBASE_HOST, found ${#MSVC_TOOLSETS[@]}" >&2
+	exit 1
+fi
+MSVCVER="${MSVC_TOOLSETS[0]}"
+
+CL_VER="$(wine "${MSVCBASE_HOST}/${MSVCVER}/bin/Hostx64/${ARCH}/cl.exe" 2>&1 | tr -d '\r' | grep -oE 'Compiler Version [0-9]+\.[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+if [ -z "$CL_VER" ]; then
+	echo "ERROR: could not read the cl.exe version for toolset ${MSVCVER}" >&2
+	exit 1
+fi
+MSVC_VERSION_NUM="$(echo "$CL_VER" | cut -d. -f1-2 | tr -d '.')"
+
+echo "Using MSVC toolset ${MSVCVER} (cl ${CL_VER}, MSVC_VERSION ${MSVC_VERSION_NUM})"
 
 MSVCDIR="${BASE}\\VC\\Tools\\MSVC\\${MSVCVER}"
 SDKBASE="${BASE}\\Windows Kits\\10"
@@ -62,9 +82,9 @@ if [ "${FORCE_CMAKE:-}" = "true" ] || [ ! -f "${BUILD_DIR}/build.ninja" ]; then
 		-DCMAKE_LINKER="${LINK_WIN}" \
 		-DCMAKE_C_COMPILER_ID=MSVC \
 		-DCMAKE_CXX_COMPILER_ID=MSVC \
-		-DCMAKE_C_COMPILER_VERSION=19.50.35726 \
-		-DCMAKE_CXX_COMPILER_VERSION=19.50.35726 \
-		-DMSVC_VERSION=1950 \
+		-DCMAKE_C_COMPILER_VERSION=${CL_VER} \
+		-DCMAKE_CXX_COMPILER_VERSION=${CL_VER} \
+		-DMSVC_VERSION=${MSVC_VERSION_NUM} \
 		-DMSVC=1 \
 		-DCMAKE_C_STANDARD_COMPUTED_DEFAULT=17 \
 		-DCMAKE_C_EXTENSIONS_COMPUTED_DEFAULT=OFF \
