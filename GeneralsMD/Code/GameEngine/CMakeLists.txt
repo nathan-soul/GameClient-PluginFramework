@@ -1224,16 +1224,13 @@ target_link_libraries(z_gameengine PUBLIC
     z_wwvegas
 )
 
-# Generals Online networking dependencies, provided by vcpkg (see vcpkg.json).
+# Generals Online networking dependencies are vendored under Source/GameNetwork/GeneralsOnline/Vendor
+# and linked by the #pragma comment(lib, ...) directives in OnlineServices_Init.h and
+# NextGenTransport.h. This fork keeps the vendored libraries instead of upstream's vcpkg
+# packages, so the msvc-wine build image needs no package manager.
 if(NOT IS_VS6_BUILD)
-    find_package(CURL CONFIG REQUIRED)
-    find_package(GameNetworkingSockets CONFIG REQUIRED)
-    find_package(sentry CONFIG REQUIRED)
-
-    target_link_libraries(z_gameengine PUBLIC
-        CURL::libcurl
-        GameNetworkingSockets::GameNetworkingSockets_s
-        sentry::sentry
+    target_link_directories(z_gameengine PUBLIC
+        Source/GameNetwork/GeneralsOnline/Vendor
     )
 endif()
 
