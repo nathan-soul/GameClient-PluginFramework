@@ -171,10 +171,10 @@ namespace
 			done(true, entries);
 		}
 
-		void RequestWatchSession(const std::string& lobbyId, const std::string& password,
-			GencastSessionCallback done) override
+		GencastAttemptResult AttemptWatchSession(const std::string& lobbyId,
+			const std::string& password) override
 		{
-			GencastWatchSession session;
+			GencastAttemptResult result;
 
 			nlohmann::json request;
 			request["lobby_id"] = lobbyId;
@@ -184,45 +184,61 @@ namespace
 
 			if (!Perform(BaseUrl() + "/direct/join", request.dump().c_str(), response))
 			{
-				session.errorMessage = "The relay did not answer.";
-				done(session);
-				return;
+				result.kind = EGencastAttempt::Failed;
+				result.errorMessage = "The relay did not answer.";
+				return result;
 			}
 
-			session.httpStatus = static_cast<int>(response.status);
+			// 401 is a real answer and must never be retried or reported as signed out.
+			if (response.status == 401)
+			{
+				result.kind = EGencastAttempt::WrongPassword;
+				result.errorMessage = "Wrong password.";
+				return result;
+			}
 
-			// 401 is "wrong password" and the caller must say exactly that, never "signed out".
+			// The streamer may not have announced yet - the shared policy retries this window.
+			if (response.status == 404)
+			{
+				result.kind = EGencastAttempt::NotFound;
+				return result;
+			}
+
 			if (response.status != 200)
 			{
-				session.errorMessage = response.status == 401
-					? "Wrong password."
-					: "That lobby is no longer watchable.";
-				done(session);
-				return;
+				result.kind = EGencastAttempt::Failed;
+				result.errorMessage = "The relay refused the session.";
+				return result;
 			}
 
 			try
 			{
 				const nlohmann::json body = nlohmann::json::parse(response.body);
-				session.sessionId = body.value("session_id", "");
-				session.sessionUrl = body.value("ws_url", "");
-				const std::string path = body.value("stream_url", "");
+				result.sessionId = body.value("session_id", "");
+				result.sessionUrl = body.value("ws_url", "");
+				result.streamUrl = body.value("stream_url", "");
 
-				if (!path.empty())
+				if (!result.streamUrl.empty())
 				{
-					session.streamUrl = path;
-					session.wsUrl = ToWebSocketUrl(path);
+					result.wsUrl = ToWebSocketUrl(result.streamUrl);
 				}
 			}
 			catch (const nlohmann::json::exception&)
 			{
-				session.errorMessage = "The relay sent something unreadable.";
-				done(session);
-				return;
+				result.kind = EGencastAttempt::Failed;
+				result.errorMessage = "The relay sent something unreadable.";
+				return result;
 			}
 
-			session.success = !session.wsUrl.empty();
-			done(session);
+			if (result.wsUrl.empty())
+			{
+				result.kind = EGencastAttempt::Failed;
+				result.errorMessage = "The relay returned no stream address.";
+				return result;
+			}
+
+			result.kind = EGencastAttempt::Success;
+			return result;
 		}
 
 		void RegisterStream(const std::string& lobbyId, GencastRegisterCallback done) override

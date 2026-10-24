@@ -85,6 +85,79 @@ EGencastMode GencastTransport::DetermineMode()
 	return EGencastMode::Services;
 }
 
+/*
+**	The shared watch policy.
+**
+**	A watcher can arrive in the instant between clicking and the stream becoming watchable, so
+**	"not found" is retried for a bounded window rather than reported as a dead end. A hold is
+**	reported to the observer, which owns the state the game reads to draw the waiting view. A
+**	wrong password stops immediately: retrying it would lock the player out of their own lobby.
+*/
+void GencastTransport::RequestWatchSession(const std::string& lobbyId,
+	const std::string& password, GencastSessionCallback done)
+{
+	// 20s covers the announce/liveness race; anything longer feels like a hang.
+	const DWORD startedAt = timeGetTime();
+	const DWORD retryWindowMs = 20000;
+	const DWORD retryCadenceMs = 500;
+
+	GencastWatchSession session;
+
+	for (;;)
+	{
+		const GencastAttemptResult attempt = AttemptWatchSession(lobbyId, password);
+
+		switch (attempt.kind)
+		{
+			case EGencastAttempt::Success:
+				session.success = true;
+				session.sessionId = attempt.sessionId;
+				session.wsUrl = attempt.wsUrl;
+				session.sessionUrl = attempt.sessionUrl;
+				session.streamUrl = attempt.streamUrl;
+				session.httpStatus = 200;
+				OnHoldStateChanged(false, false);
+				done(session);
+				return;
+
+			case EGencastAttempt::WrongPassword:
+				// 401 carries real meaning here and must not be retried or reframed.
+				session.httpStatus = 401;
+				session.errorMessage = attempt.errorMessage.empty()
+					? "Wrong password." : attempt.errorMessage;
+				OnHoldStateChanged(false, false);
+				done(session);
+				return;
+
+			case EGencastAttempt::Held:
+				OnHoldStateChanged(true, attempt.holdSeconds > 0);
+				break;
+
+			case EGencastAttempt::NotFound:
+				break;
+
+			case EGencastAttempt::Failed:
+				session.errorMessage = attempt.errorMessage.empty()
+					? "The server did not answer." : attempt.errorMessage;
+				OnHoldStateChanged(false, false);
+				done(session);
+				return;
+		}
+
+		if (timeGetTime() - startedAt >= retryWindowMs)
+		{
+			session.errorMessage = attempt.kind == EGencastAttempt::Held
+				? "Still held by the server."
+				: "That lobby is not watchable yet.";
+			OnHoldStateChanged(false, false);
+			done(session);
+			return;
+		}
+
+		Sleep(retryCadenceMs);
+	}
+}
+
 GencastTransport* GencastTransport::Create()
 {
 	const EGencastMode mode = DetermineMode();

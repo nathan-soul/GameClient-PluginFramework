@@ -54,6 +54,31 @@ struct GencastStreamRegistration
 	std::string errorMessage;
 };
 
+/*
+**	One watch attempt, as the server answered it. Transports report what happened; they do not
+**	decide how long to keep trying. That policy is shared, because the two modes differ only in
+**	which status codes mean what.
+*/
+enum class EGencastAttempt
+{
+	Success,
+	NotFound,		// not watchable yet: the announce (relay) or liveness report (GO) has not landed
+	Held,			// the server is holding this viewer; Services admission control only
+	WrongPassword,	// must be shown as a wrong password, never as a signed-out session
+	Failed
+};
+
+struct GencastAttemptResult
+{
+	EGencastAttempt kind = EGencastAttempt::Failed;
+	std::string sessionId;
+	std::string wsUrl;
+	std::string sessionUrl;
+	std::string streamUrl;
+	std::string errorMessage;
+	int holdSeconds = 0;
+};
+
 using GencastWatchListCallback = std::function<void(bool success, const std::vector<GencastWatchEntry>& entries)>;
 using GencastSessionCallback = std::function<void(const GencastWatchSession& session)>;
 using GencastRegisterCallback = std::function<void(const GencastStreamRegistration& registration)>;
@@ -73,8 +98,19 @@ public:
 
 	// Direct mode takes the password from the player; Services mode ignores it and mints from
 	// the session token, which is why the password is a parameter rather than transport state.
-	virtual void RequestWatchSession(const std::string& lobbyId, const std::string& password,
-		GencastSessionCallback done) = 0;
+	//
+	// This is not implemented per transport. The bounded retry while a session is not yet
+	// watchable, and the reporting of a hold, are the same problem in both modes and live in
+	// RequestWatchSession() below. A transport only says what the server answered.
+	virtual GencastAttemptResult AttemptWatchSession(const std::string& lobbyId,
+		const std::string& password) = 0;
+
+	void RequestWatchSession(const std::string& lobbyId, const std::string& password,
+		GencastSessionCallback done);
+
+	// Called by the shared policy when the viewer's hold state changes: waiting behind an
+	// admission hold or a broadcast delay. Services sets it, the relay never does.
+	virtual void OnHoldStateChanged(bool serverHeld, bool waitingForDelay) {}
 
 	virtual void RegisterStream(const std::string& lobbyId, GencastRegisterCallback done) = 0;
 
