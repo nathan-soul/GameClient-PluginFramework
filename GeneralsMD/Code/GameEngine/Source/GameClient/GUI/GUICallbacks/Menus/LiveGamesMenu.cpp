@@ -30,6 +30,9 @@
 #include "GameClient/LiveGamesMenu.h"
 
 #include "Common/LiveObserver.h"
+#include "Common/GencastTransport.h"
+#include "GameNetwork/GeneralsOnline/json.hpp"
+#include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 #include "GameClient/GameText.h"
 #include "GameClient/GameWindowManager.h"
 #include "GameClient/Gadget.h"
@@ -84,6 +87,79 @@ static Int s_buttonCopyID = 0;
 
 void LiveGamesMenuEnterLiveGamesMode(void) { s_liveGamesMode = TRUE; }
 Bool LiveGamesMenuIsLiveGamesMode(void) { return s_liveGamesMode; }
+
+/*
+**	Direct mode: the relay is the only source of lobbies, so the list is fetched from /direct/lobbies
+**	and rewritten into the shape liveServicesParseLivestreams already understands. Going through the
+**	shared parser keeps row semantics identical - the renderer below never learns which mode it is in.
+*/
+static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiString& body);
+
+static Bool liveGamesFetchFromRelay(void)
+{
+	GencastTransport* transport = GencastTransport::Create();
+
+	if (transport == nullptr)
+		return FALSE;
+
+	std::string body;
+	Bool ok = FALSE;
+
+	transport->FetchWatchList([&](bool success, const std::vector<GencastWatchEntry>& entries)
+	{
+		ok = success;
+		if (!success)
+			return;
+
+		nlohmann::json list = nlohmann::json::array();
+
+		for (std::vector<GencastWatchEntry>::const_iterator it = entries.begin(); it != entries.end(); ++it)
+		{
+			try
+			{
+				nlohmann::json row;
+				// lobby_id is a number in the shared parser's contract.
+				row["lobby_id"] = (long long)atoll(it->lobbyId.c_str());
+				row["map_name"] = it->mapName;
+				row["name"] = it->mapName;
+				row["state"] = (it->state == "live") ? 1 : 0;
+				row["passworded"] = it->hasPassword;
+
+				nlohmann::json players = nlohmann::json::array();
+				const nlohmann::json parsed = nlohmann::json::parse(
+					it->playersJson.empty() ? std::string("[]") : it->playersJson);
+
+				if (parsed.is_array())
+				{
+					for (const nlohmann::json& player : parsed)
+					{
+						if (player.is_string())
+							players.push_back(player.get<std::string>());
+					}
+				}
+
+				row["players"] = players;
+				list.push_back(row);
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				continue;
+			}
+		}
+
+		nlohmann::json payload;
+		payload["livestreams"] = list;
+		body = payload.dump();
+	});
+
+	delete transport;
+
+	if (!ok)
+		return FALSE;
+
+	liveGamesApplyResponse(TRUE, 200, AsciiString(body.c_str()));
+	return TRUE;
+}
 
 static void liveGamesRequestList(void);
 static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiString& body);
@@ -165,9 +241,19 @@ static void liveGamesRequestList(void)
 	if (liveRelayFetchInFlight())
 		return;
 
+	s_lastLiveFetchMs = timeGetTime();
+
+	// Direct mode: the relay owns the list, and every row it returns is watchable by anyone who
+	// knows the password, so there is no per-viewer filtering to ask GO for.
+	if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
+	{
+		if (!liveGamesFetchFromRelay())
+			liveGamesApplyResponse(FALSE, 0, AsciiString::TheEmptyString);
+		return;
+	}
+
 	// GO owns the list of what is being streamed: the relay cannot tell which of its sessions a
 	// given player is allowed to see.
-	s_lastLiveFetchMs = timeGetTime();
 	liveRelayBeginFetch(liveServicesEndpoint("Livestreams"));
 }
 
