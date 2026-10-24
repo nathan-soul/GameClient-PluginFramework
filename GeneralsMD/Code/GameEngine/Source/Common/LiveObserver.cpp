@@ -20,6 +20,10 @@
 
 #if defined(GENERALS_ONLINE)
 
+#include "Common/GencastTransport.h"
+#include "Common/GlobalData.h"
+#include "Common/PlayerList.h"
+#include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 #include "Common/LiveObserver.h"
 #include "Common/Recorder.h"
 #include "Common/GlobalData.h"
@@ -1180,6 +1184,49 @@ void liveObserverOnGameCleared(void)
 
 bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 {
+	// Direct mode: the relay is the grantor and the lobby password is the only gate. Services
+	// is not consulted at all, which is the point - it never learns the relay exists.
+	if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
+	{
+		GencastTransport* transport = GencastTransport::Create();
+
+		if (transport == nullptr)
+		{
+			liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s no direct transport\n",
+				m_gameId.str());
+			return false;
+		}
+
+		std::string connectUrl;
+		bool ok = false;
+
+		transport->RequestWatchSession(m_gameId.str(), m_password,
+			[&](const GencastWatchSession& session)
+			{
+				ok = session.success;
+
+				if (session.success)
+				{
+					connectUrl = session.wsUrl;
+				}
+				else
+				{
+					liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s direct failed status=%d %s\n",
+						m_gameId.str(), session.httpStatus, session.errorMessage.c_str());
+				}
+			});
+
+		delete transport;
+
+		if (!ok || connectUrl.empty())
+		{
+			return false;
+		}
+
+		outConnectUrl = connectUrl.c_str();
+		return true;
+	}
+
 	// GO owns admission to a livestream: it checks the session, confirms the lobby really is
 	// being streamed, and asks the relay for a single-use ticket on the player's behalf. What
 	// comes back is a complete connect URL, so nothing here needs to know the relay's address.

@@ -18,6 +18,10 @@
 
 #include "PreRTS.h"
 
+#include "Common/GencastTransport.h"
+#include "Common/GlobalData.h"
+#include "Common/PlayerList.h"
+#include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 #include "Common/LiveStreamer.h"
 #include "Common/LiveObserver.h"	// LIVE_OBSERVER_LOGGING gate + LIVE_OBSERVER_BUILD_TAG
 #include "Common/GlobalData.h"
@@ -845,6 +849,60 @@ bool LiveStreamer::wsRecv(std::vector<char>& outBuffer)
 
 bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 {
+	// Direct mode: announce to the relay and take the stream key it hands back. The relay binds
+	// this player's password to the lobby on the first announce, so a wrong identity here means
+	// the wrong password is handed out later.
+	if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
+	{
+		GencastTransport* transport = GencastTransport::Create();
+
+		if (transport == nullptr)
+		{
+			liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s no direct transport\n",
+				m_lobbyId.str());
+			return false;
+		}
+
+		long playerId = 0;
+		if (ThePlayerList != nullptr && ThePlayerList->getLocalPlayer() != nullptr)
+		{
+			playerId = ThePlayerList->getLocalPlayer()->getPlayerIndex();
+		}
+
+		const char* mapName = TheGlobalData != nullptr ? TheGlobalData->m_mapName.str() : "";
+
+		transport->SetAnnounceContext(playerId, mapName, std::string());
+
+		std::string streamUrl;
+		bool ok = false;
+
+		transport->RegisterStream(m_lobbyId.str(),
+			[&](const GencastStreamRegistration& registration)
+			{
+				ok = registration.success;
+
+				if (registration.success)
+				{
+					streamUrl = registration.streamUrl;
+				}
+				else
+				{
+					liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s direct failed: %s\n",
+						m_lobbyId.str(), registration.errorMessage.c_str());
+				}
+			});
+
+		delete transport;
+
+		if (!ok || streamUrl.empty())
+		{
+			return false;
+		}
+
+		outUrl = streamUrl.c_str();
+		return true;
+	}
+
 	// The host reports the broadcast delay here rather than in the REGISTER frame: GO forwards it
 	// to the relay when the session is created, before any source connects, so every observer is
 	// held behind the same number. A non-host sends no delay at all, so a second source cannot
