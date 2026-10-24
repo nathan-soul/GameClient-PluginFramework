@@ -13,6 +13,10 @@
 #define SETTINGS_KEY_RENDER_FRAMERATE_LIMIT_FPS_VAL "fps_limit"
 #define SETTINGS_KEY_RENDER_DRAW_STATS_OVERLAY "stats_overlay"
 
+#define SETTINGS_KEY_GENCAST "gencast"
+#define SETTINGS_KEY_GENCAST_RELAY_DIRECT "relay_direct"
+#define SETTINGS_KEY_GENCAST_RELAY_DIRECT_URL "relay_direct_url"
+
 #define SETTINGS_KEY_CHAT "chat"
 #define SETTINGS_KEY_CHAT_LIFE_SECONDS "duration_seconds_until_fade_out"
 
@@ -218,6 +222,21 @@ void GenOnlineSettings::Load(void)
 				}
 			}
 
+            if (jsonSettings.contains(SETTINGS_KEY_GENCAST))
+            {
+                auto gencastSettings = jsonSettings[SETTINGS_KEY_GENCAST];
+
+                if (gencastSettings.contains(SETTINGS_KEY_GENCAST_RELAY_DIRECT))
+                {
+                    m_Relay_Direct = gencastSettings[SETTINGS_KEY_GENCAST_RELAY_DIRECT];
+                }
+
+                if (gencastSettings.contains(SETTINGS_KEY_GENCAST_RELAY_DIRECT_URL))
+                {
+                    m_Relay_Direct_Url = gencastSettings[SETTINGS_KEY_GENCAST_RELAY_DIRECT_URL].get<std::string>();
+                }
+            }
+
             if (jsonSettings.contains(SETTINGS_KEY_NETWORK))
             {
                 auto networkSettings = jsonSettings[SETTINGS_KEY_NETWORK];
@@ -408,6 +427,14 @@ void GenOnlineSettings::Save()
 					{SETTINGS_KEY_RENDER_LIMIT_FRAMERATE, m_Render_LimitFramerate},
 					{SETTINGS_KEY_RENDER_FRAMERATE_LIMIT_FPS_VAL, m_Render_FramerateLimit_FPSVal},
 					{SETTINGS_KEY_RENDER_DRAW_STATS_OVERLAY, m_Render_DrawStatsOverlay},
+				}
+		},
+
+		{
+			SETTINGS_KEY_GENCAST,
+				{
+					{SETTINGS_KEY_GENCAST_RELAY_DIRECT, m_Relay_Direct},
+					{SETTINGS_KEY_GENCAST_RELAY_DIRECT_URL, m_Relay_Direct_Url},
 				}
 		},
 

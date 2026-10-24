@@ -50,6 +50,11 @@ public:
 	}
 
 	std::string GetAnticheatPlugin() const;
+
+	// gencast: talk to the relay directly instead of through Services. Off by default; with it
+	// off the client makes no new network calls and behaves exactly as before.
+	bool Relay_Direct() const { return m_Relay_Direct; }
+	const std::string& Relay_Direct_Url() const { return m_Relay_Direct_Url; }
 	bool Social_Notifications_FriendComesOnline_Menus() { return m_Social_Notification_FriendComesOnline_Menus; }
 	bool Social_Notifications_FriendComesOnline_Gameplay() { return m_Social_Notification_FriendComesOnline_Gameplay; }
 	bool Social_Notifications_FriendGoesOffline_Menus() { return m_Social_Notification_FriendGoesOffline_Menus; }
@@ -137,6 +142,9 @@ private:
 	bool m_bInitialized = false;
 
 	bool m_bVerbose = false;
+
+	bool m_Relay_Direct = false;
+	std::string m_Relay_Direct_Url;
 
 	bool m_Render_DrawStatsOverlay = true;
 	bool m_Render_LimitFramerate = true;
