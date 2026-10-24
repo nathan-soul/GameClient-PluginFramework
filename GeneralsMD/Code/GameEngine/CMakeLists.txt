@@ -1208,6 +1208,9 @@ target_include_directories(z_gameengine PUBLIC
     Include
 
     Include/GameNetwork/GeneralsOnline/Vendor/
+    # The vendored ValveNetworkingSockets headers are included as <steam/...>, which is the
+    # layout vcpkg used to provide. Point the compiler at the directory that contains steam/.
+    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets
 )
 
 target_include_directories(z_gameengine PRIVATE
