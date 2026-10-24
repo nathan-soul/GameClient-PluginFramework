@@ -1225,6 +1225,11 @@ void WOLQuickMatchMenuInit( WindowLayout *layout, void *userData )
 
 				// clear ui element
 				GadgetComboBoxReset(comboBoxNumPlayers);
+				for (PlaylistEntry& playlist : vecPlaylists)
+				{
+					s.format(L"%hs", playlist.Name.c_str());
+					GadgetComboBoxAddEntry(comboBoxNumPlayers, s, GameSpyColor[GSCOLOR_DEFAULT]);
+				}
 
 
 				for (PlaylistEntry& playlist : vecPlaylists)

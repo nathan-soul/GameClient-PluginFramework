@@ -95,7 +95,15 @@ enum EWebSocketMessageID
 	MATCHMAKING_ACTION_SETUP_PROGRESS = 45,
 	MODERATION_NOTICE = 46,
 	MODERATION_COMMAND = 47,
-	MODERATION_COMMAND_RESULT = 48
+	MODERATION_COMMAND_RESULT = 48,
+	LOBBY_OBSERVER_SUBSCRIBE = 49,
+	LOBBY_OBSERVER_UNSUBSCRIBE = 50,
+	LOBBY_OBSERVER_LOBBY_CHANGED = 51,
+	LOBBY_OBSERVER_GAME_STARTING = 52,
+	LOBBY_OBSERVER_STREAM_LIVE = 53,
+	LOBBY_OBSERVER_GAME_STARTED = 54,
+	LOBBY_OBSERVER_CHAT_FROM_CLIENT = 55,
+	LOBBY_OBSERVER_LIST_REQUEST = 56
 };
 
 enum class EQoSRegions
@@ -159,6 +167,10 @@ public:
 	void SendData_RoomChatMessage(UnicodeString& msg, bool bIsAction);
 	void SendData_FriendMessage(UnicodeString& msg, int64_t target_user_id);
 	void SendData_LobbyChatMessage(UnicodeString& msg, bool bIsAction, bool bIsAnnouncement, bool bShowAnnouncementToHost);
+	void SendData_LobbyObserverSubscribe(int64_t lobbyID);
+	void SendData_LobbyObserverUnsubscribe(int64_t lobbyID);
+	void SendData_LobbyObserverChat(int64_t lobbyID, UnicodeString& msg);
+	void SendData_LobbyObserverListRequest(int64_t lobbyID);
 	void SendData_JoinNetworkRoom(int roomID, uint64_t requestID = 0);
 	void SendData_LeaveNetworkRoom();
 	void SendData_MarkReady(bool bReady);
