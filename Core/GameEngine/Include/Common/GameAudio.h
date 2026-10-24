@@ -137,6 +137,10 @@ class AudioManager : public SubsystemInterface
 		{
 			MuteAudioReason_WindowFocus,
 
+			// Gencast: a defeated player who is still streaming keeps the broadcast alive but
+			// must not hear the match they are no longer allowed to see.
+			MuteAudioReason_GencastBlackout,
+
 			MuteAudioReason_Count
 		};
 

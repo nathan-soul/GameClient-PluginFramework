@@ -15,3 +15,7 @@
 */
 
 extern Bool TheGenCastBlackout;
+
+/// Sets the flag and, on a change, mutes or unmutes game audio for the streaming player.
+/// Cheap to call every frame: it returns immediately unless the state actually changed.
+void GencastSetBlackout(Bool on);

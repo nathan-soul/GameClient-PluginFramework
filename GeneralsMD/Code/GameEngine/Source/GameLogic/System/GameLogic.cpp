@@ -4267,25 +4267,54 @@ void GameLogic::update()
 	}
 
 #if defined(GENERALS_ONLINE)
+	static Bool s_gencastNoticeShown = FALSE;
+
+	const Bool isStreaming = (TheLiveStreamer != nullptr) && TheLiveStreamer->isStreaming();
+
 	if (TheNGMPGame != nullptr && TheNGMPGame->canKickOnObserversDisabled())
 	{
 		// Gencast: dropping a streaming player ends the broadcast for every watcher. Keep them
 		// in the match and black their own view out instead, so being eliminated cannot be used
 		// to keep watching for the team. Non-streamers take the vanilla path unchanged.
-		const Bool isStreaming = (TheLiveStreamer != nullptr) && TheLiveStreamer->isStreaming();
-
 		if (isStreaming)
 		{
-			TheGenCastBlackout = TRUE;
+			if (!s_gencastNoticeShown && TheInGameUI != nullptr)
+			{
+				TheInGameUI->messageNoFormat(UnicodeString(L"You are still the gencast streamer. Leaving now ends the broadcast for every watcher."));
+				s_gencastNoticeShown = TRUE;
+			}
+
+			GencastSetBlackout(TRUE);
 		}
 		else
 		{
+			GencastSetBlackout(FALSE);
 			TheGameLogic->exitGame();
 		}
 	}
 	else
 	{
-		TheGenCastBlackout = FALSE;
+		GencastSetBlackout(FALSE);
+
+		// Observers are still allowed, so nobody is dropped - but a defeated streamer has to be
+		// told not to walk out, or they end the broadcast by leaving. Said once per defeat.
+		Player* gencastLocal = ThePlayerList != nullptr ? ThePlayerList->getLocalPlayer() : nullptr;
+
+		const Bool isDefeated = gencastLocal != nullptr && !gencastLocal->isPlayerObserver() &&
+			TheVictoryConditions != nullptr && TheVictoryConditions->hasSinglePlayerBeenDefeated(gencastLocal);
+
+		if (isStreaming && isDefeated)
+		{
+			if (!s_gencastNoticeShown && TheInGameUI != nullptr)
+			{
+				TheInGameUI->messageNoFormat(UnicodeString(L"You are still the gencast streamer. Leaving now ends the broadcast for every watcher."));
+				s_gencastNoticeShown = TRUE;
+			}
+		}
+		else
+		{
+			s_gencastNoticeShown = FALSE;
+		}
 	}
 #endif
 

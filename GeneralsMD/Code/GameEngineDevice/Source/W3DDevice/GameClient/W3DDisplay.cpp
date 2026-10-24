@@ -44,6 +44,9 @@ static void drawFramerateBar();
 #include "Common/FramePacer.h"
 #include "Common/ThingFactory.h"
 #include "Common/GlobalData.h"
+#if defined(GENERALS_ONLINE)
+#include "Common/GencastBlackout.h"
+#endif
 #include "Common/PerfTimer.h"
 #include "Common/FileSystem.h"
 #include "Common/LocalFileSystem.h"
@@ -1855,6 +1858,17 @@ void W3DDisplay::draw()
 
 	if (TheGlobalData->m_headless)
 		return;
+
+#if defined(GENERALS_ONLINE)
+	if (TheGenCastBlackout)
+	{
+		// Gencast: this player is defeated but still streaming, so the match keeps running and
+		// the relay keeps receiving frames. Draw nothing of the world - just black - and let the
+		// HUD pass paint the notice on top.
+		TheDisplay->drawFillRect(0, 0, getWidth(), getHeight(), GameMakeColor(0, 0, 0, 255));
+		return;
+	}
+#endif
 
 	updateStartupSplash();
 
