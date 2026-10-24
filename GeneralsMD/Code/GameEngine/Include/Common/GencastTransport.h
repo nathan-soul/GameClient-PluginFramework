@@ -40,7 +40,8 @@ struct GencastWatchSession
 	// 401 here means "wrong password" and must not be shown as "signed out".
 	int httpStatus = 0;
 	std::string sessionId;
-	std::string wsUrl;
+	std::string wsUrl;      ///< the media socket the watcher connects to
+	std::string sessionUrl; ///< the relay's pre-game session feed (/direct/session/{id})
 	std::string streamUrl;
 	std::string errorMessage;
 };

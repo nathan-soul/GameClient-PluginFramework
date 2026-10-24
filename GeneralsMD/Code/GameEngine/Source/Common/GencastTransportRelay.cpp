@@ -205,6 +205,7 @@ namespace
 			{
 				const nlohmann::json body = nlohmann::json::parse(response.body);
 				session.sessionId = body.value("session_id", "");
+				session.sessionUrl = body.value("ws_url", "");
 				const std::string path = body.value("stream_url", "");
 
 				if (!path.empty())
@@ -266,7 +267,9 @@ namespace
 			request["map_name"] = m_mapName;
 			request["players"] = players;
 			request["slots"] = nlohmann::json::array();
-			request["state"] = "lobby";
+			// The streamer registers when the match starts (LiveStreamer::registerForGame), not
+			// while sitting in the lobby, so the relay's entry is live from its first breath.
+			request["state"] = "live";
 
 			HttpResponse response;
 
