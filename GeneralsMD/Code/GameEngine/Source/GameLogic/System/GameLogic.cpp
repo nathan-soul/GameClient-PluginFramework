@@ -121,6 +121,11 @@ struct QuitGameException {};
 
 #include "../NextGenMP_defines.h"
 
+#if defined(GENERALS_ONLINE)
+#include "Common/GencastBlackout.h"
+#include "Common/LiveStreamer.h"
+#endif
+
 DECLARE_PERF_TIMER(SleepyMaintenance)
 
 #include "Common/UnitTimings.h" //Contains the DO_UNIT_TIMINGS define jba.
@@ -4264,7 +4269,23 @@ void GameLogic::update()
 #if defined(GENERALS_ONLINE)
 	if (TheNGMPGame != nullptr && TheNGMPGame->canKickOnObserversDisabled())
 	{
-		TheGameLogic->exitGame();
+		// Gencast: dropping a streaming player ends the broadcast for every watcher. Keep them
+		// in the match and black their own view out instead, so being eliminated cannot be used
+		// to keep watching for the team. Non-streamers take the vanilla path unchanged.
+		const Bool isStreaming = (TheLiveStreamer != nullptr) && TheLiveStreamer->isStreaming();
+
+		if (isStreaming)
+		{
+			TheGenCastBlackout = TRUE;
+		}
+		else
+		{
+			TheGameLogic->exitGame();
+		}
+	}
+	else
+	{
+		TheGenCastBlackout = FALSE;
 	}
 #endif
 
