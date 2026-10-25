@@ -3,10 +3,17 @@
 #if defined(GENERALS_ONLINE)
 
 #include "Common/GencastTransport.h"
+#include "Common/GlobalData.h"
 #include "Common/LiveObserver.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
+// The pregame announce reads the lobby the player is sitting in; the transport itself needs
+// LobbyEntry/LobbyMemberEntry for that.
+#include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
 
 #include <curl/curl.h>
+
+#include <cstdio>
+#include <memory>
 
 namespace
 {
@@ -65,6 +72,21 @@ const char* GencastModeName(EGencastMode mode)
 		default:
 			return "unavailable";
 	}
+}
+
+const char* GencastStreamStateName(EGencastStreamState state)
+{
+	switch (state)
+	{
+		case EGencastStreamState::Pregame:
+			return "pregame";
+		case EGencastStreamState::Live:
+			return "live";
+	}
+
+	// Unreachable, and pregame is the safe answer if it ever is: an entry reported live with no
+	// match behind it sends viewers at a stream that does not exist.
+	return "pregame";
 }
 
 EGencastMode GencastTransport::DetermineMode()
@@ -202,6 +224,112 @@ GencastTransport* GencastTransport::Create()
 	// Services mode keeps using the calls it already makes; there is no second implementation
 	// of today's behaviour to hand back yet.
 	return nullptr;
+}
+
+/*
+**	The identity here comes from the lobby, not from the player list.
+**
+**	ThePlayerList is not built until the match starts, so the local Player that the streamer
+**	announces under does not exist while the players are seating. The lobby member carries the
+**	same numbers, and the seat index has to be the one the streamer will use as its wire slot:
+**	the relay refuses the stream to a lobby whose bound announcer announced under a different
+**	player id, and GO seats players contiguously from slot 0, so the two agree.
+*/
+void GencastAnnounceCurrentLobby()
+{
+	if (!NGMP_OnlineServicesManager::Settings.Relay_Direct() ||
+		NGMP_OnlineServicesManager::Settings.Relay_Direct_Url().empty())
+	{
+		// Without a URL the transport resolves to the Services mode, whose reachability probe
+		// (a blocking HEAD) has no business running from a lobby refresh.
+		return;
+	}
+
+	// Switched off means this client would not announce at match start either. An entry nobody
+	// can stream is worse than no entry: the watch list would advertise a lobby a viewer cannot
+	// be given a session for.
+	if (TheGlobalData == nullptr || !TheGlobalData->m_liveStreamEnabled)
+	{
+		return;
+	}
+
+	NGMP_OnlineServices_LobbyInterface* lobbyInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+	if (lobbyInterface == nullptr || !lobbyInterface->IsInLobby())
+	{
+		return;
+	}
+
+	NGMP_OnlineServices_AuthInterface* authInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+
+	if (authInterface == nullptr)
+	{
+		return;
+	}
+
+	const int64_t userId = authInterface->GetUserID();
+
+	if (userId <= 0)
+	{
+		// No Services id to bind the announce to. Anything invented here would attach a
+		// stranger's password to this lobby.
+		return;
+	}
+
+	const LobbyEntry& lobby = lobbyInterface->GetCurrentLobby();
+
+	const LobbyMemberEntry* localMember = nullptr;
+
+	for (const LobbyMemberEntry& member : lobby.members)
+	{
+		if (member.user_id == userId)
+		{
+			localMember = &member;
+			break;
+		}
+	}
+
+	if (localMember == nullptr || localMember->m_SlotIndex == LobbyMemberEntry::SLOT_INDEX_NONE)
+	{
+		// In the lobby but not seated yet: there is no wire slot to announce under, and being
+		// seated is itself a lobby change, so this runs again as soon as the seat is known.
+		return;
+	}
+
+	// The match is announced live by the streamer; everything the lobby reports after that point
+	// is still a live lobby, never a pregame one - a refresh landing mid-match must not downgrade
+	// the relay's entry.
+	const EGencastStreamState state =
+		(TheNGMPGame != nullptr && TheNGMPGame->isGameInProgress())
+			? EGencastStreamState::Live
+			: EGencastStreamState::Pregame;
+
+	// GO's map name is the one the lobby shows, and it is UTF-8 already. The global map name is
+	// the map that was last loaded, which before the match still belongs to the previous game.
+	std::string mapName = lobby.map_name;
+
+	if (mapName.empty())
+	{
+		mapName = TheGlobalData->m_mapName.str();
+	}
+
+	char lobbyId[32];
+	snprintf(lobbyId, sizeof(lobbyId), "%lld", (long long)lobby.lobbyID);
+
+	std::unique_ptr<GencastTransport> transport(GencastTransport::Create());
+
+	if (transport == nullptr)
+	{
+		return;
+	}
+
+	// 1-based wire slot, as the streamer announces it: the relay rejects player id 0 outright and
+	// Generals' slot indices are 0-based.
+	transport->SetAnnounceContext((long)localMember->m_SlotIndex + 1, (long)userId,
+		localMember->display_name, mapName);
+	transport->AnnounceLobby(lobbyId, state);
 }
 
 #endif // GENERALS_ONLINE

@@ -25,6 +25,23 @@ enum class EGencastMode
 
 const char* GencastModeName(EGencastMode mode);
 
+/*
+**	The phase a lobby is being announced in.
+**
+**	Direct mode announces a lobby as soon as the player creates or joins it, long before there is
+**	a match, so every announce has to say which of the two it is reporting: a watch list full of
+**	"live" entries that are still seating players sends viewers at streams that do not exist, and
+**	one full of "pregame" entries with a match running hides the matches.
+*/
+enum class EGencastStreamState
+{
+	Pregame,	// the players are still in the lobby
+	Live		// the match is running
+};
+
+/// The relay's spelling of a phase ("pregame" or "live"); never NULL.
+const char* GencastStreamStateName(EGencastStreamState state);
+
 struct GencastWatchEntry
 {
 	std::string lobbyId;
@@ -121,7 +138,26 @@ public:
 	// admission hold or a broadcast delay. Services sets it, the relay never does.
 	virtual void OnHoldStateChanged(bool serverHeld, bool waitingForDelay) {}
 
-	virtual void RegisterStream(const std::string& lobbyId, GencastRegisterCallback done) = 0;
+	// The phase is the caller's to state: the same lobby is announced while the players are still
+	// seating and again once its match runs, and the relay shows whichever it was told last. It
+	// is a parameter rather than transport state so that a stale value can never be announced: the
+	// caller that knows the match started is the one that says so.
+	virtual void RegisterStream(const std::string& lobbyId, EGencastStreamState state,
+		GencastRegisterCallback done) = 0;
+
+	// Direct mode: keep the relay's entry for a lobby in step with the lobby itself, without
+	// waiting for a match and without reporting the answer. RegisterStream only runs once a
+	// stream is starting, which leaves a lobby invisible for the whole pregame; this is what
+	// makes it watchable before anyone streams.
+	//
+	// The lobby is read on the calling thread and the request is sent from a worker: the
+	// transport's calls are synchronous, and this one is reached from a lobby refresh, where a
+	// five-second timeout inside a frame would freeze the lobby. An announce that would not
+	// change anything the relay stores is dropped, so a lobby that is refreshed far more often
+	// than it changes costs one request per change, not one per refresh.
+	//
+	// Failures are logged, never reported: nobody is waiting on the answer.
+	virtual void AnnounceLobby(const std::string& lobbyId, EGencastStreamState state) {}
 
 	// Direct mode has to tell the relay who is announcing and what the lobby looks like: the
 	// relay binds that player's password to the lobby on the first announce, keyed by the
@@ -147,3 +183,15 @@ public:
 
 // Defined in GencastTransportRelay.cpp; only meaningful in Direct mode.
 GencastTransport* CreateRelayGencastTransport();
+
+/*
+**	Announce the lobby the local player is in, if direct mode has anything new to say about it.
+**
+**	Called by the lobby whenever the lobby it holds changes: on create, on join, and on every
+**	update GO pushes afterwards. No-op outside direct mode, with live streaming switched off, or
+**	when the local player has no seat to announce under yet.
+**
+**	Lives here rather than in the lobby code so that everything direct mode decides - who is
+**	announcing, in which phase, and whether anything actually changed - is in one place.
+*/
+void GencastAnnounceCurrentLobby();

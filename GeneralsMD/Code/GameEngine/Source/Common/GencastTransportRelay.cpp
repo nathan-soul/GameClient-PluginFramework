@@ -13,6 +13,9 @@
 
 #include <curl/curl.h>
 
+#include <mutex>
+#include <thread>
+
 /*
 **	Direct transport: the client talks to the relay itself.
 **
@@ -28,6 +31,22 @@
 namespace
 {
 	const long kTimeoutSeconds = 5;
+
+	/*
+	**	The last announce body this client sent for a lobby, and the lock that guards it.
+	**
+	**	A lobby is refreshed far more often than it changes, and every announce is an HTTP
+	**	request, so identical bodies are dropped instead of re-sent. The whole body is kept, not a
+	**	digest of the lobby: it is exactly what the relay stored, so there is no second projection
+	**	of the lobby that could fall out of step with the first.
+	**
+	**	One lobby at a time per client, so a single slot is enough; a body carries the lobby id and
+	**	so always differs for a different lobby. The lock is for the game thread (the only caller
+	**	today) plus any future one, not for the worker: the worker only ever reads the copy it was
+	**	given.
+	*/
+	std::mutex s_announceMutex;
+	std::string s_lastAnnounceBody;
 
 	size_t WriteToString(char* ptr, size_t size, size_t nmemb, void* userdata)
 	{
@@ -385,41 +404,18 @@ namespace
 			return result;
 		}
 
-		void RegisterStream(const std::string& lobbyId, GencastRegisterCallback done) override
+		void RegisterStream(const std::string& lobbyId, EGencastStreamState state,
+			GencastRegisterCallback done) override
 		{
 			GencastStreamRegistration registration;
 
-			nlohmann::json request;
-			request["lobby_id"] = lobbyId;
-			request["player_id"] = m_playerId;
-
-			// The relay keys its player record on the Services user id and only falls back to
-			// the wire player id, so an unknown id is left out rather than sent as -1.
-			if (m_userId > 0)
-			{
-				request["user_id"] = m_userId;
-			}
-
-			request["display_name"] = m_displayName;
-			request["map_name"] = m_mapName;
-			// The roster now travels in slots; players is kept as an empty array because the
-			// relay still carries the field, and nothing else fills it any more.
-			request["players"] = nlohmann::json::array();
-			request["slots"] = SlotsFromCurrentLobby();
-			// The streamer registers when the match starts (LiveStreamer::registerForGame), not
-			// while sitting in the lobby, so the relay's entry is live from its first breath.
-			request["state"] = "live";
+			const std::string postBody = BuildAnnounceBody(lobbyId, state);
 
 			// Same reason as the join request: map and player names come from game data and may
 			// not be valid UTF-8, and dump() throws on that. This runs on the streamer's network
-			// thread, where an escaping exception terminates the process.
-			std::string postBody;
-
-			try
-			{
-				postBody = request.dump();
-			}
-			catch (const nlohmann::json::exception&)
+			// thread, where an escaping exception terminates the process; an empty body is
+			// BuildAnnounceBody reporting exactly that.
+			if (postBody.empty())
 			{
 				registration.errorMessage = "The lobby details could not be encoded.";
 				done(registration);
@@ -480,10 +476,27 @@ namespace
 
 			registration.success = !registration.streamKey.empty() && !registration.streamUrl.empty();
 
-			GencastDebugLog("gencast: announce lobby=%s player=%ld -> key=%zu chars url=%s%s",
-				lobbyId.c_str(), m_playerId, registration.streamKey.size(),
-				registration.streamUrl.c_str(),
+			if (registration.success)
+			{
+				// This path is one of the two that announce, so the change comparison has to learn
+				// about it: the phase just moved to live, and a lobby that returns to pregame after
+				// a match would otherwise compare equal to the pregame body from before it and be
+				// dropped, leaving the relay reporting a live lobby with no match behind it.
+				std::scoped_lock<std::mutex> lock(s_announceMutex);
+				s_lastAnnounceBody = postBody;
+			}
+
+			GencastDebugLog("gencast: announce lobby=%s player=%ld state=%s -> key=%zu chars url=%s%s",
+				lobbyId.c_str(), m_playerId, GencastStreamStateName(state),
+				registration.streamKey.size(), registration.streamUrl.c_str(),
 				registration.success ? "" : " (rejected)");
+
+			// The phase change to live, in the log the rest of the client writes to. This runs on
+			// the streamer's network thread; NetworkLog takes its own lock.
+			NetworkLog(ELogVerbosity::LOG_RELEASE,
+				"[GENCAST] relay announce lobby=%s state=%s streaming=%s",
+				lobbyId.c_str(), GencastStreamStateName(state),
+				registration.success ? "yes" : "no");
 
 			if (!registration.success && registration.errorMessage.empty())
 			{
@@ -493,12 +506,125 @@ namespace
 			done(registration);
 		}
 
+		/// Fire-and-forget announce, used while the players are still in the lobby.
+		///
+		/// The body is built here, on the caller's thread, and only the finished request goes to
+		/// the worker: the lobby is a live engine structure that the game thread rewrites on every
+		/// update, and reading it from a worker would be a data race for no gain.
+		void AnnounceLobby(const std::string& lobbyId, EGencastStreamState state) override
+		{
+			const std::string body = BuildAnnounceBody(lobbyId, state);
+
+			if (body.empty())
+			{
+				GencastDebugLog("gencast: lobby announce lobby=%s skipped, details unencodable",
+					lobbyId.c_str());
+				return;
+			}
+
+			// The body is the whole of what the relay would store, so comparing it with the last
+			// one is an exact "did anything change" test: ready flags, chat and the map-name
+			// spelling of the lobby cost no request at all, while a new seat, team, colour, map or
+			// phase does. (A body carries the lobby id, so another lobby always differs.)
+			{
+				std::scoped_lock<std::mutex> lock(s_announceMutex);
+
+				if (body == s_lastAnnounceBody)
+				{
+					return;
+				}
+
+				s_lastAnnounceBody = body;
+			}
+
+			// Also in GeneralsOnline.log: this is the line that says the relay was told about the
+			// lobby before the match, which is the whole point of announcing from here.
+			NetworkLog(ELogVerbosity::LOG_RELEASE, "[GENCAST] relay announce lobby=%s state=%s",
+				lobbyId.c_str(), GencastStreamStateName(state));
+
+			// Perform() is synchronous with the same 5 s timeout as the rest of the transport, and
+			// this is reached from a lobby refresh - the game thread. Sending inline would spend
+			// that timeout inside a frame whenever the relay is slow, so the request goes to a
+			// worker that holds nothing but strings (the transport may be deleted under it).
+			const std::string url = BaseUrl() + "/direct/announce";
+			const std::string stateName = GencastStreamStateName(state);
+
+			std::thread([url, body, lobbyId, stateName]()
+				{
+					HttpResponse response;
+					const bool answered = Perform(url, body.c_str(), response);
+
+					if (!answered || response.status != 200)
+					{
+						// Nothing landed, so forget the body: the next lobby refresh has to try
+						// again, or one failed request would leave the lobby unannounced for as
+						// long as it does not change. Only if it is still the newest body, so a
+						// later announce is not thrown away.
+						{
+							std::scoped_lock<std::mutex> lock(s_announceMutex);
+
+							if (s_lastAnnounceBody == body)
+							{
+								s_lastAnnounceBody.clear();
+							}
+						}
+
+						GencastDebugLog("gencast: lobby announce lobby=%s state=%s -> %s",
+							lobbyId.c_str(), stateName.c_str(),
+							answered ? "refused" : "relay unreachable");
+						return;
+					}
+
+					GencastDebugLog("gencast: lobby announce lobby=%s state=%s -> status=%ld",
+						lobbyId.c_str(), stateName.c_str(), response.status);
+				}).detach();
+		}
+
 		// The direct relay has no lobby-subscription channel: the watch list is polled and the
 		// session feed is read per session, so there is nothing to subscribe to here.
 		void SubscribeLobbyUpdates(const std::string&) override {}
 		void UnsubscribeLobbyUpdates() override {}
 
 	private:
+		/// The /direct/announce body for the lobby as it is right now.
+		///
+		/// Shared by both announce paths so they cannot disagree about what a lobby looks like:
+		/// RegisterStream when a stream is starting, AnnounceLobby whenever the lobby changes.
+		/// Empty means the details could not be encoded (invalid UTF-8 in a name, which dump()
+		/// throws on), and the caller reports or logs it.
+		std::string BuildAnnounceBody(const std::string& lobbyId, EGencastStreamState state)
+		{
+			nlohmann::json request;
+			request["lobby_id"] = lobbyId;
+			request["player_id"] = m_playerId;
+
+			// The relay keys its player record on the Services user id and only falls back to
+			// the wire player id, so an unknown id is left out rather than sent as -1.
+			if (m_userId > 0)
+			{
+				request["user_id"] = m_userId;
+			}
+
+			request["display_name"] = m_displayName;
+			request["map_name"] = m_mapName;
+			// The roster now travels in slots; players is kept as an empty array because the
+			// relay still carries the field, and nothing else fills it any more.
+			request["players"] = nlohmann::json::array();
+			request["slots"] = SlotsFromCurrentLobby();
+			// The phase is the caller's, never assumed here: this body is sent both from the
+			// lobby (pregame) and from the streamer at match start (live).
+			request["state"] = GencastStreamStateName(state);
+
+			try
+			{
+				return request.dump();
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				return std::string();
+			}
+		}
+
 		long m_playerId = 0;
 		// The Services user id, or <= 0 when the client is not signed in. The relay keys its
 		// player record on this one and falls back to m_playerId for older clients.

@@ -6,6 +6,7 @@
 #include "GameLogic/GameLogic.h"
 #include "Common/GlobalData.h"
 #include "Common/LiveStreamer.h"
+#include "Common/GencastTransport.h"		// direct mode: announce the lobby to the relay
 
 extern void OnKickedFromLobby();
 
@@ -1398,6 +1399,15 @@ void NGMP_OnlineServices_LobbyInterface::UpdateRoomDataCache(std::function<void(
 								}
 							}
 						}
+
+						// This is the only place a lobby becomes current on this client: create and
+						// join both land here, and GO pushes every later lobby change straight into
+						// this function (LOBBY_CURRENT_LOBBY_UPDATE). Direct mode needs the lobby in
+						// the relay's watch list before the match, not only once a stream starts,
+						// so the announce hangs off the same point the UI refreshes its roster
+						// from. It compares what it would send with what it last sent, so the
+						// refreshes that change nothing cost nothing; no-op outside direct mode.
+						GencastAnnounceCurrentLobby();
 
 						if (fnCallback != nullptr)
 						{

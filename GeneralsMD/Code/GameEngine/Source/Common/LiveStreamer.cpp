@@ -862,6 +862,10 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 	// Direct mode: announce to the relay and take the stream key it hands back. The relay binds
 	// this player's password to the lobby on the first announce, so a wrong identity here means
 	// the wrong password is handed out later.
+	//
+	// The lobby was already announced as pregame when it was created or joined (see
+	// GencastAnnounceCurrentLobby); this is the phase change to live, and the announce that has
+	// to come back with a stream key.
 	if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
 	{
 		GencastTransport* transport = GencastTransport::Create();
@@ -915,7 +919,7 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 		std::string streamUrl;
 		bool ok = false;
 
-		transport->RegisterStream(m_lobbyId.str(),
+		transport->RegisterStream(m_lobbyId.str(), EGencastStreamState::Live,
 			[&](const GencastStreamRegistration& registration)
 			{
 				ok = registration.success;
