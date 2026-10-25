@@ -19,6 +19,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <mutex>
 
 namespace
 {
@@ -311,13 +312,32 @@ void GencastAnnounceCurrentLobby()
 			? EGencastStreamState::Live
 			: EGencastStreamState::Pregame;
 
-	// GO's map name is the one the lobby shows, and it is UTF-8 already. The global map name is
-	// the map that was last loaded, which before the match still belongs to the previous game.
+	// GO's map name is the one the lobby shows, and it is UTF-8 already. It is empty until the
+	// host has picked a map, and TheGlobalData->m_mapName is the map that was last *loaded* -
+	// still the shell map when a match starts, which is how "ShellMapMD" reached the relay and
+	// would have reached the watch list. Keep the last map actually published instead, and stay
+	// quiet while there has never been one: an entry with no map is worse than no entry yet.
+	static std::mutex s_mapMutex;
+	static std::string s_lastMapName;
+
 	std::string mapName = lobby.map_name;
+
+	{
+		std::scoped_lock<std::mutex> lock(s_mapMutex);
+
+		if (!mapName.empty())
+		{
+			s_lastMapName = mapName;
+		}
+		else
+		{
+			mapName = s_lastMapName;
+		}
+	}
 
 	if (mapName.empty())
 	{
-		mapName = TheGlobalData->m_mapName.str();
+		return;
 	}
 
 	char lobbyId[32];
