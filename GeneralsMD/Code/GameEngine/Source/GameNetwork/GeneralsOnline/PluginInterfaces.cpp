@@ -340,18 +340,22 @@ void AnticheatPlugInterface::LoadPlugin(const char* szPluginName)
         AC_PLUGIN_LOAD_FUNCTION(ACMessageArrivedViaTransport);
 
         // transport funcs
-        AC_PLUGIN_LOAD_FUNCTION(DoesACPluginProvideSecureGameTransport);
+        // Optional: a plugin that does not carry the game transport (goanticheat is the one that
+        // ships with the install) must still load, otherwise the AC identity handshake never
+        // happens and the client reports the anticheat as "not running". Every caller guards its
+        // pointer, so an unexported transport is simply an unsupported feature.
+        AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(DoesACPluginProvideSecureGameTransport);
         AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(SetSecureGameTransportEnabled);
-        AC_PLUGIN_LOAD_FUNCTION(StartSignalling);
-        AC_PLUGIN_LOAD_FUNCTION(SendPacket);
-        AC_PLUGIN_LOAD_FUNCTION(GetNextRecvPacketSize);
-        AC_PLUGIN_LOAD_FUNCTION(RecvPacket);
+        AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(StartSignalling);
+        AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(SendPacket);
+        AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(GetNextRecvPacketSize);
+        AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(RecvPacket);
         AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(FreePacket);
-        AC_PLUGIN_LOAD_FUNCTION(GetConnectionLatencyForUser);
-        AC_PLUGIN_LOAD_FUNCTION(IsConnectionRelayed);
+        AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(GetConnectionLatencyForUser);
+        AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(IsConnectionRelayed);
 
-        AC_PLUGIN_LOAD_FUNCTION(DisconnectPlayer);
-        AC_PLUGIN_LOAD_FUNCTION(DisconnectAll);
+        AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(DisconnectPlayer);
+        AC_PLUGIN_LOAD_FUNCTION_OPTIONAL(DisconnectAll);
 
         // Login funcs
         AC_PLUGIN_LOAD_FUNCTION(Login);
