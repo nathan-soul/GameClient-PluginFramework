@@ -1010,6 +1010,22 @@ WindowMsgHandledType MainMenuInput( GameWindow *window, UnsignedInt msg,
 		// --------------------------------------------------------------------------------------------
 		case GWM_CHAR:
 		{
+			// TEST ENTRY: Ctrl+Shift+W opens the Watch Live browser.
+			//
+			// Direct mode has no Online screens, and the browser has no menu button anywhere, so
+			// without this there is no way to reach the lobby list at all. It costs nothing when
+			// direct mode is off: the browser opens and honestly reports that nothing answered.
+			const UnsignedInt keyCode = (UnsignedInt)mData1;
+			const UnsignedInt keyState = (UnsignedInt)mData2;
+
+			if (keyCode == KEY_W && (keyState & KEY_STATE_DOWN) != 0 &&
+				(keyState & KEY_STATE_CONTROL) != 0 && (keyState & KEY_STATE_SHIFT) != 0)
+			{
+				LiveGamesMenuEnterLiveGamesMode();
+				TheShell->push("Menus/ReplayMenu.wnd", TRUE);
+				return MSG_HANDLED;
+			}
+
 			initialGadgetDelay = 1;
 			dropDownWindows[DROPDOWN_MAIN]->winHide(FALSE);
 			TheTransitionHandler->setGroup("MainMenuFade", TRUE);

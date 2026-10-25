@@ -24,6 +24,7 @@
 #include "Common/GlobalData.h"
 #include "Common/PlayerList.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
+#include "Common/GencastClientLog.h"
 #include "Common/LiveObserver.h"
 #include "Common/Recorder.h"
 #include "Common/GlobalData.h"
@@ -80,6 +81,15 @@ void liveObserverLog(const char* fmt, ...) {
 		va_end(args);
 		fflush(logFile);
 	}
+
+	// Mirror to the client log the relay collects, so a remote tester's lines arrive without them
+	// having to find and send a file. Never throws, never blocks on the relay.
+	char mirrored[768] = {};
+	va_list mirrorArgs;
+	va_start(mirrorArgs, fmt);
+	vsnprintf(mirrored, sizeof(mirrored) - 1, fmt, mirrorArgs);
+	va_end(mirrorArgs);
+	GencastClientLogLine(mirrored);
 #endif // LIVE_OBSERVER_LOGGING
 }
 
@@ -450,6 +460,32 @@ Bool liveRelayPollFetch(AsciiString& outBody, Bool& outSuccess, Int& outStatusCo
 Bool liveRelayFetchInFlight()
 {
 	return s_fetchInFlight.load() ? TRUE : FALSE;
+}
+
+// The reservation pair lets the browser run a fetch its own way (the direct transport does its
+// own HTTP and its own JSON reshaping) while the main loop still collects the result through
+// liveRelayPollFetch(). No callback crosses threads: only the shared slot does.
+Bool liveRelayBeginExternalFetch(void)
+{
+	bool expected = false;
+	if (!s_fetchInFlight.compare_exchange_strong(expected, true))
+		return FALSE;
+
+	s_fetchReady.store(false);
+	return TRUE;
+}
+
+void liveRelayCompleteExternalFetch(const std::string& body, Bool success, Int statusCode)
+{
+	{
+		std::lock_guard<std::mutex> lock(s_fetchMutex);
+		s_fetchBody = body;
+		s_fetchSuccess = success ? true : false;
+		s_fetchStatus = (long)statusCode;
+	}
+
+	s_fetchReady.store(true);
+	s_fetchInFlight.store(false);
 }
 
 // ============================================================================
@@ -1200,6 +1236,8 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 		std::string connectUrl;
 		bool ok = false;
 
+		// close() joins this thread, so the retry window must stop as soon as the session is
+		// cancelled - otherwise leaving a watch blocks on the relay for the whole window.
 		transport->RequestWatchSession(m_gameId.str(), m_password,
 			[&](const GencastWatchSession& session)
 			{
@@ -1211,10 +1249,19 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 				}
 				else
 				{
+					// 401 is the wrong-password answer, and this flag is the only thing that
+					// re-opens the password popup. The transport separates it from every other
+					// failure, so it must not be flattened back into "no stream" here.
+					if (session.httpStatus == 401)
+					{
+						m_passwordRejected.store(TRUE);
+					}
+
 					liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s direct failed status=%d %s\n",
 						m_gameId.str(), session.httpStatus, session.errorMessage.c_str());
 				}
-			});
+			},
+			[this]() { return !m_shouldRun.load(); });
 
 		delete transport;
 
@@ -1222,6 +1269,9 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 		{
 			return false;
 		}
+
+		liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s direct session ready, watch socket %s\n",
+			m_gameId.str(), connectUrl.c_str());
 
 		outConnectUrl = connectUrl.c_str();
 		return true;

@@ -19,6 +19,7 @@
 #include "PreRTS.h"
 
 #include "Common/GencastTransport.h"
+#include "Common/GencastClientLog.h"
 #include "Common/GlobalData.h"
 #include "Common/PlayerList.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
@@ -78,6 +79,15 @@ void liveStreamLog(const char* fmt, ...) {
 		va_end(args);
 		fflush(logFile);
 	}
+
+	// Mirror to the client log the relay collects, so a remote tester's lines arrive without them
+	// having to find and send a file. Never throws, never blocks on the relay.
+	char mirrored[768] = {};
+	va_list mirrorArgs;
+	va_start(mirrorArgs, fmt);
+	vsnprintf(mirrored, sizeof(mirrored) - 1, fmt, mirrorArgs);
+	va_end(mirrorArgs);
+	GencastClientLogLine(mirrored);
 #endif // LIVE_OBSERVER_LOGGING
 }
 
@@ -863,10 +873,23 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 			return false;
 		}
 
+		// The relay keys player identities from 1 and rejects 0 outright, while Generals' player
+		// index is 0-based (the host is index 0). Sending the index unchanged means the most
+		// common streamer - the host - is refused with 400 and never announces at all.
 		long playerId = 0;
 		if (ThePlayerList != nullptr && ThePlayerList->getLocalPlayer() != nullptr)
 		{
-			playerId = ThePlayerList->getLocalPlayer()->getPlayerIndex();
+			playerId = (long)ThePlayerList->getLocalPlayer()->getPlayerIndex() + 1;
+		}
+
+		if (playerId <= 0)
+		{
+			// No local player means no identity to announce under, and anything invented here
+			// would bind a stranger's password to this lobby.
+			liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s no local player, cannot announce\n",
+				m_lobbyId.str());
+			delete transport;
+			return false;
 		}
 
 		const char* mapName = TheGlobalData != nullptr ? TheGlobalData->m_mapName.str() : "";
@@ -898,6 +921,9 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 		{
 			return false;
 		}
+
+		liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s direct stream ready: %s\n",
+			m_lobbyId.str(), streamUrl.c_str());
 
 		outUrl = streamUrl.c_str();
 		return true;

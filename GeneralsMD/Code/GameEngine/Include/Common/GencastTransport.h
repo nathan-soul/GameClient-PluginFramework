@@ -83,6 +83,10 @@ using GencastWatchListCallback = std::function<void(bool success, const std::vec
 using GencastSessionCallback = std::function<void(const GencastWatchSession& session)>;
 using GencastRegisterCallback = std::function<void(const GencastStreamRegistration& registration)>;
 
+/// Asked between attempts by the shared watch policy. TRUE means "stop trying": the caller is
+/// going away, so the retry window must not be able to hold its thread.
+using GencastCancelPredicate = std::function<bool()>;
+
 class GencastTransport
 {
 public:
@@ -102,11 +106,16 @@ public:
 	// This is not implemented per transport. The bounded retry while a session is not yet
 	// watchable, and the reporting of a hold, are the same problem in both modes and live in
 	// RequestWatchSession() below. A transport only says what the server answered.
+	//
+	// cancelled is polled between attempts and during the wait: the observer's close() joins
+	// the thread that calls this, so a viewer who leaves mid-retry must not wait out the whole
+	// window. Unset means "never cancelled".
 	virtual GencastAttemptResult AttemptWatchSession(const std::string& lobbyId,
 		const std::string& password) = 0;
 
 	void RequestWatchSession(const std::string& lobbyId, const std::string& password,
-		GencastSessionCallback done);
+		GencastSessionCallback done,
+		GencastCancelPredicate cancelled = GencastCancelPredicate());
 
 	// Called by the shared policy when the viewer's hold state changes: waiting behind an
 	// admission hold or a broadcast delay. Services sets it, the relay never does.

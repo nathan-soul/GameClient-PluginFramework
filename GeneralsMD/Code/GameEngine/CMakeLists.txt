@@ -574,6 +574,7 @@ set(GAMEENGINE_SRC
     Source/Common/GencastTransport.cpp
     Source/Common/GencastTransportRelay.cpp
     Source/Common/GencastBlackout.cpp
+    Source/Common/GencastClientLog.cpp
     Source/Common/GlobalData.cpp
 #    Source/Common/INI/INI.cpp
 #    Source/Common/INI/INIAiData.cpp
@@ -1265,3 +1266,9 @@ target_precompile_headers(z_gameengine PRIVATE
 
 add_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
 add_compile_definitions(GENERALS_ONLINE)
+# Live-path diagnostics ON. LiveObserver.h only derives LIVE_OBSERVER_LOGGING from
+# ALLOW_DEBUG_UTILS, which nothing defines, so liveObserverLog/liveStreamLog are compiled out of
+# every ordinary build - and with them the lines the relay's /direct/clientlog ingest is meant to
+# receive. This is the supported switch (see DISABLE_LIVE_OBSERVER_LOGGING); drop this line for a
+# silent release build.
+add_compile_definitions(LIVE_OBSERVER_LOGGING)

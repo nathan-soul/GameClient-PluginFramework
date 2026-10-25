@@ -46,6 +46,8 @@
 #include "GameClient/LobbyObserverMenu.h"	// SetLobbyObserverMode opens the read-only lobby view
 
 #include <vector>
+#include <memory>
+#include <thread>
 #include <windows.h>
 
 // ============================================================================
@@ -92,73 +94,97 @@ Bool LiveGamesMenuIsLiveGamesMode(void) { return s_liveGamesMode; }
 **	Direct mode: the relay is the only source of lobbies, so the list is fetched from /direct/lobbies
 **	and rewritten into the shape liveServicesParseLivestreams already understands. Going through the
 **	shared parser keeps row semantics identical - the renderer below never learns which mode it is in.
+**
+**	The transport's calls are synchronous, so this runs on its own thread and publishes through the
+**	browser's shared fetch slot. A dead relay's five second timeout belongs to that thread, not to
+**	the frame the user is looking at; LiveGamesMenuUpdate() applies the result on the main thread.
 */
-static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiString& body);
-
-static Bool liveGamesFetchFromRelay(void)
+static void liveGamesRelayFetchThread(void)
 {
-	GencastTransport* transport = GencastTransport::Create();
-
-	if (transport == nullptr)
-		return FALSE;
-
 	std::string body;
 	Bool ok = FALSE;
 
-	transport->FetchWatchList([&](bool success, const std::vector<GencastWatchEntry>& entries)
+	try
 	{
-		ok = success;
-		if (!success)
-			return;
+		// The browser only takes this path in direct mode, so it asks for the relay transport
+		// directly. Create() would re-run the mode probe, and that can reach GO for a HEAD
+		// request - not from a worker thread, which is not where GO's interfaces belong.
+		std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
 
-		nlohmann::json list = nlohmann::json::array();
-
-		for (std::vector<GencastWatchEntry>::const_iterator it = entries.begin(); it != entries.end(); ++it)
+		if (!transport)
 		{
+			liveRelayCompleteExternalFetch(body, FALSE, 0);
+			return;
+		}
+
+		transport->FetchWatchList([&](bool success, const std::vector<GencastWatchEntry>& entries)
+		{
+			ok = success ? TRUE : FALSE;
+
+			if (!success)
+				return;
+
+			nlohmann::json list = nlohmann::json::array();
+
+			for (std::vector<GencastWatchEntry>::const_iterator it = entries.begin(); it != entries.end(); ++it)
+			{
+				try
+				{
+					nlohmann::json row;
+					// lobby_id is a number in the shared parser's contract.
+					row["lobby_id"] = (long long)atoll(it->lobbyId.c_str());
+					row["map_name"] = it->mapName;
+					row["name"] = it->mapName;
+					row["state"] = (it->state == "live") ? 1 : 0;
+					row["passworded"] = it->hasPassword;
+
+					nlohmann::json players = nlohmann::json::array();
+					const nlohmann::json parsed = nlohmann::json::parse(
+						it->playersJson.empty() ? std::string("[]") : it->playersJson);
+
+					if (parsed.is_array())
+					{
+						for (const nlohmann::json& player : parsed)
+						{
+							if (player.is_string())
+								players.push_back(player.get<std::string>());
+						}
+					}
+
+					row["players"] = players;
+					list.push_back(row);
+				}
+				catch (const nlohmann::json::exception&)
+				{
+					continue;
+				}
+			}
+
+			nlohmann::json payload;
+			payload["livestreams"] = list;
+
 			try
 			{
-				nlohmann::json row;
-				// lobby_id is a number in the shared parser's contract.
-				row["lobby_id"] = (long long)atoll(it->lobbyId.c_str());
-				row["map_name"] = it->mapName;
-				row["name"] = it->mapName;
-				row["state"] = (it->state == "live") ? 1 : 0;
-				row["passworded"] = it->hasPassword;
-
-				nlohmann::json players = nlohmann::json::array();
-				const nlohmann::json parsed = nlohmann::json::parse(
-					it->playersJson.empty() ? std::string("[]") : it->playersJson);
-
-				if (parsed.is_array())
-				{
-					for (const nlohmann::json& player : parsed)
-					{
-						if (player.is_string())
-							players.push_back(player.get<std::string>());
-					}
-				}
-
-				row["players"] = players;
-				list.push_back(row);
+				body = payload.dump();
 			}
 			catch (const nlohmann::json::exception&)
 			{
-				continue;
+				// A map or player name that is not valid UTF-8 cannot be serialised. Fail the
+				// list rather than let the exception unwind out of a detached thread.
+				ok = FALSE;
+				body.clear();
 			}
-		}
+		});
+	}
+	catch (const std::exception&)
+	{
+		// Nothing may escape here: it would terminate the process, and the fetch slot would
+		// stay reserved so the browser would never refresh again.
+		ok = FALSE;
+		body.clear();
+	}
 
-		nlohmann::json payload;
-		payload["livestreams"] = list;
-		body = payload.dump();
-	});
-
-	delete transport;
-
-	if (!ok)
-		return FALSE;
-
-	liveGamesApplyResponse(TRUE, 200, AsciiString(body.c_str()));
-	return TRUE;
+	liveRelayCompleteExternalFetch(body, ok, ok ? 200 : 0);
 }
 
 static void liveGamesRequestList(void);
@@ -244,11 +270,13 @@ static void liveGamesRequestList(void)
 	s_lastLiveFetchMs = timeGetTime();
 
 	// Direct mode: the relay owns the list, and every row it returns is watchable by anyone who
-	// knows the password, so there is no per-viewer filtering to ask GO for.
+	// knows the password, so there is no per-viewer filtering to ask GO for. The fetch runs on
+	// its own thread like the Services one: the transport is synchronous, and its timeout must
+	// not be spent inside a frame.
 	if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
 	{
-		if (!liveGamesFetchFromRelay())
-			liveGamesApplyResponse(FALSE, 0, AsciiString::TheEmptyString);
+		if (liveRelayBeginExternalFetch())
+			std::thread(liveGamesRelayFetchThread).detach();
 		return;
 	}
 

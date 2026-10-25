@@ -94,7 +94,8 @@ EGencastMode GencastTransport::DetermineMode()
 **	wrong password stops immediately: retrying it would lock the player out of their own lobby.
 */
 void GencastTransport::RequestWatchSession(const std::string& lobbyId,
-	const std::string& password, GencastSessionCallback done)
+	const std::string& password, GencastSessionCallback done,
+	GencastCancelPredicate cancelled)
 {
 	// 20s covers the announce/liveness race; anything longer feels like a hang.
 	const DWORD startedAt = timeGetTime();
@@ -103,8 +104,26 @@ void GencastTransport::RequestWatchSession(const std::string& lobbyId,
 
 	GencastWatchSession session;
 
+	// The cancel exit reports through done() like every other exit, so the callback contract
+	// ("invoked exactly once") holds no matter how the wait ends.
+	const std::function<void()> reportCancelled = [&]()
+	{
+		session.errorMessage = "Cancelled.";
+		OnHoldStateChanged(false, false);
+		done(session);
+	};
+
 	for (;;)
 	{
+		// A viewer who left while this was running must not be held here: LiveObserver::close()
+		// joins the thread that calls this, so without the check the whole window would be a
+		// freeze on the way out of the game.
+		if (cancelled && cancelled())
+		{
+			reportCancelled();
+			return;
+		}
+
 		const GencastAttemptResult attempt = AttemptWatchSession(lobbyId, password);
 
 		switch (attempt.kind)
@@ -154,7 +173,18 @@ void GencastTransport::RequestWatchSession(const std::string& lobbyId,
 			return;
 		}
 
-		Sleep(retryCadenceMs);
+		// Wait in slices so a cancel landing mid-cadence is seen within ~50ms instead of
+		// holding the joining thread for the rest of the cadence.
+		for (DWORD waited = 0; waited < retryCadenceMs; waited += 50)
+		{
+			if (cancelled && cancelled())
+			{
+				reportCancelled();
+				return;
+			}
+
+			Sleep(50);
+		}
 	}
 }
 

@@ -3,6 +3,7 @@
 #if defined(GENERALS_ONLINE)
 
 #include "Common/GencastTransport.h"
+#include "Common/GencastClientLog.h"
 
 #include "GameNetwork/GeneralsOnline/GeneralsOnline_Settings.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
@@ -50,6 +51,10 @@ namespace
 
 		curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
 		curl_easy_setopt(curl, CURLOPT_TIMEOUT, kTimeoutSeconds);
+		// The game is multi-threaded by the time these run (observer and streamer each own a
+		// network thread). Without NOSIGNAL, libcurl resolves timeouts with SIGALRM, which can
+		// land in another thread's context and take the process down.
+		curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 		curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out.body);
@@ -74,6 +79,12 @@ namespace
 		curl_slist_free_all(headers);
 		curl_easy_cleanup(curl);
 
+		// One line per relay call: what we asked, what came back. This is the first thing to look
+		// at when direct mode does not behave, and it ships to the relay's own log.
+		GencastDebugLog("relay: %s %s -> status=%ld bytes=%zu%s",
+			postBody != nullptr ? "POST" : "GET", url.c_str(), out.status, out.body.size(),
+			rc == CURLE_OK ? "" : " (curl failed)");
+
 		return rc == CURLE_OK;
 	}
 
@@ -91,6 +102,12 @@ namespace
 	}
 
 	/// http://host:port/direct/stream/k -> ws://host:port/direct/stream/k
+	///
+	/// A rooted path ("/direct/watch/{id}") gets the relay's host in front of it. The base is
+	/// resolved here rather than by calling this again with BaseUrl(): that recursion never
+	/// terminates when the base is empty or carries no scheme, which is a stack overflow crash
+	/// instead of a bad URL. An unusable base returns an empty string and the caller reports a
+	/// missing address.
 	std::string ToWebSocketUrl(const std::string& path)
 	{
 		if (path.rfind("ws://", 0) == 0 || path.rfind("wss://", 0) == 0)
@@ -108,13 +125,47 @@ namespace
 			return "wss://" + path.substr(8);
 		}
 
-		// The relay answers with a rooted path (/direct/watch/{id}); the host is its base URL.
-		return ToWebSocketUrl(BaseUrl()) + path;
+		const std::string base = BaseUrl();
+		std::string socketBase;
+
+		if (base.rfind("https://", 0) == 0)
+		{
+			socketBase = "wss://" + base.substr(8);
+		}
+		else if (base.rfind("http://", 0) == 0)
+		{
+			socketBase = "ws://" + base.substr(7);
+		}
+		else if (base.rfind("ws://", 0) == 0 || base.rfind("wss://", 0) == 0)
+		{
+			socketBase = base;
+		}
+		else
+		{
+			return std::string();
+		}
+
+		// The relay always answers with a rooted path, but a relative one must not be glued to
+		// the host as "hostdirect/...".
+		if (!path.empty() && path[0] != '/')
+		{
+			return socketBase + "/" + path;
+		}
+
+		return socketBase + path;
 	}
 
 	class RelayGencastTransport : public GencastTransport
 	{
 	public:
+		RelayGencastTransport()
+		{
+			// Puts the client identity and the relay it is talking to in the log that ships to the
+			// relay, so the tester's file and the server's agree on who said what.
+			GencastDebugLog("gencast: direct transport relay=%s client=%s instance=%d",
+				BaseUrl().c_str(), GencastClientId(), GencastClientInstance());
+		}
+
 		EGencastMode Mode() const override { return EGencastMode::Direct; }
 
 		bool IsAvailable() const override { return !BaseUrl().empty(); }
@@ -168,6 +219,8 @@ namespace
 				return;
 			}
 
+			GencastDebugLog("gencast: watch list -> %zu lobbies", entries.size());
+
 			done(true, entries);
 		}
 
@@ -180,9 +233,25 @@ namespace
 			request["lobby_id"] = lobbyId;
 			request["password"] = password;
 
+			// dump() throws on invalid UTF-8, and the password comes straight from a text
+			// entry. Serialising outside a try would let that exception escape into the
+			// observer's network thread, where nothing catches it and the process dies.
+			std::string postBody;
+
+			try
+			{
+				postBody = request.dump();
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				result.kind = EGencastAttempt::Failed;
+				result.errorMessage = "The password could not be encoded.";
+				return result;
+			}
+
 			HttpResponse response;
 
-			if (!Perform(BaseUrl() + "/direct/join", request.dump().c_str(), response))
+			if (!Perform(BaseUrl() + "/direct/join", postBody.c_str(), response))
 			{
 				result.kind = EGencastAttempt::Failed;
 				result.errorMessage = "The relay did not answer.";
@@ -192,6 +261,8 @@ namespace
 			// 401 is a real answer and must never be retried or reported as signed out.
 			if (response.status == 401)
 			{
+				GencastDebugLog("gencast: join lobby=%s -> wrong password", lobbyId.c_str());
+
 				result.kind = EGencastAttempt::WrongPassword;
 				result.errorMessage = "Wrong password.";
 				return result;
@@ -200,12 +271,17 @@ namespace
 			// The streamer may not have announced yet - the shared policy retries this window.
 			if (response.status == 404)
 			{
+				GencastDebugLog("gencast: join lobby=%s -> not announced yet", lobbyId.c_str());
+
 				result.kind = EGencastAttempt::NotFound;
 				return result;
 			}
 
 			if (response.status != 200)
 			{
+				GencastDebugLog("gencast: join lobby=%s -> refused status=%ld",
+					lobbyId.c_str(), response.status);
+
 				result.kind = EGencastAttempt::Failed;
 				result.errorMessage = "The relay refused the session.";
 				return result;
@@ -236,6 +312,9 @@ namespace
 				result.errorMessage = "The relay returned no stream address.";
 				return result;
 			}
+
+			GencastDebugLog("gencast: join lobby=%s -> session=%s ws=%s",
+				lobbyId.c_str(), result.sessionId.c_str(), result.wsUrl.c_str());
 
 			result.kind = EGencastAttempt::Success;
 			return result;
@@ -287,9 +366,25 @@ namespace
 			// while sitting in the lobby, so the relay's entry is live from its first breath.
 			request["state"] = "live";
 
+			// Same reason as the join request: map and player names come from game data and may
+			// not be valid UTF-8, and dump() throws on that. This runs on the streamer's network
+			// thread, where an escaping exception terminates the process.
+			std::string postBody;
+
+			try
+			{
+				postBody = request.dump();
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				registration.errorMessage = "The lobby details could not be encoded.";
+				done(registration);
+				return;
+			}
+
 			HttpResponse response;
 
-			if (!Perform(BaseUrl() + "/direct/announce", request.dump().c_str(), response))
+			if (!Perform(BaseUrl() + "/direct/announce", postBody.c_str(), response))
 			{
 				registration.errorMessage = "The relay did not answer.";
 				done(registration);
@@ -298,6 +393,9 @@ namespace
 
 			if (response.status != 200)
 			{
+				GencastDebugLog("gencast: announce lobby=%s player=%ld -> status=%ld",
+					lobbyId.c_str(), m_playerId, response.status);
+
 				registration.errorMessage = response.status == 404
 					? "Direct watch is closed on that relay."
 					: "The relay refused the announcement.";
@@ -320,9 +418,13 @@ namespace
 				registration.streamKey = body.value("stream_key", "");
 				const std::string path = body.value("stream_url", "");
 
+				// The relay answers the announce with a rooted path
+				// ("/direct/stream/{key}"), and the streamer hands this straight to CURLOPT_URL,
+				// which needs a scheme. Passing the path through is a connection that never
+				// opens.
 				if (!path.empty())
 				{
-					registration.streamUrl = path;
+					registration.streamUrl = ToWebSocketUrl(path);
 				}
 			}
 			catch (const nlohmann::json::exception&)
@@ -332,7 +434,18 @@ namespace
 				return;
 			}
 
-			registration.success = !registration.streamKey.empty();
+			registration.success = !registration.streamKey.empty() && !registration.streamUrl.empty();
+
+			GencastDebugLog("gencast: announce lobby=%s player=%ld -> key=%zu chars url=%s%s",
+				lobbyId.c_str(), m_playerId, registration.streamKey.size(),
+				registration.streamUrl.c_str(),
+				registration.success ? "" : " (rejected)");
+
+			if (!registration.success && registration.errorMessage.empty())
+			{
+				registration.errorMessage = "The relay returned no stream address.";
+			}
+
 			done(registration);
 		}
 

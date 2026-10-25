@@ -2470,7 +2470,9 @@ WindowMsgHandledType WOLLobbyMenuSystem( GameWindow *window, UnsignedInt msg,
 							}
 
 							// CRC Check
-							if (Lobby.exe_crc != TheGlobalData->m_exeCRC || Lobby.ini_crc != TheGlobalData->m_iniCRC)
+							// Observer builds only spectate, so exe parity is not required and only ini_crc
+							// is checked. Workspace-local divergence - MUST NOT be pushed upstream.
+							if (Lobby.ini_crc != TheGlobalData->m_iniCRC)
 							{
 								if (TheGlobalData->m_iniCRC != VANILLA_INI_CRC)
 								{

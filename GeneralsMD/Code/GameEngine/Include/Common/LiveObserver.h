@@ -543,6 +543,17 @@ Bool liveRelayPollFetch(AsciiString& outBody, Bool& outSuccess, Int& outStatusCo
 /// TRUE while a request is outstanding.
 Bool liveRelayFetchInFlight();
 
+/// Reserve the single fetch slot for a request the caller runs on its own thread. The live game
+/// browser uses this for the relay's lobby list, which the direct transport fetches with
+/// synchronous calls: reserving the slot lets it keep that off the main loop while still
+/// funnelling the result through liveRelayPollFetch().
+/// Returns FALSE while another fetch is outstanding.
+Bool liveRelayBeginExternalFetch(void);
+
+/// Publish the result of a reserved fetch, from any thread. Call exactly once after a successful
+/// liveRelayBeginExternalFetch().
+void liveRelayCompleteExternalFetch(const std::string& body, Bool success, Int statusCode);
+
 // ---------------------------------------------------------------------------
 // GO services calls
 //
@@ -619,7 +630,7 @@ Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostB
 // every change to the instrumentation. Shared by LiveObserver.cpp and LiveStreamer.cpp, which must
 // therefore include this header - that is also what resolves LIVE_OBSERVER_LOGGING above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-08-15-observer-pace-toggle"
+#define LIVE_OBSERVER_BUILD_TAG "2026-10-25-gencast-direct-log"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* lobbyId);

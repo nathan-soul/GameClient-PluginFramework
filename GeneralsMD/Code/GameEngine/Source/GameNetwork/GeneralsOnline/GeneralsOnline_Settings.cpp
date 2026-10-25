@@ -3,6 +3,8 @@
 #include "../OnlineServices_LobbyInterface.h"
 #include "../OnlineServices_Init.h"
 
+#include <fstream>
+
 #define SETTINGS_KEY_CAMERA "camera"
 #define SETTINGS_KEY_CAMERA_MIN_HEIGHT "min_height"
 #define SETTINGS_KEY_CAMERA_MOVE_SPEED_RATIO "move_speed_ratio"
@@ -402,6 +404,36 @@ void GenOnlineSettings::Load(void)
 
 	// Always save so we re-serialize anything new or missing
 	Save();
+
+	// Test-relay override: a gencast_direct.txt next to the exe pins direct mode at the relay it
+	// names, for this run only. Applied after Save() on purpose - the file is the switch, and it
+	// must not be baked into settings.json, or deleting it would leave the install pointed at a
+	// test relay for good.
+	{
+		std::ifstream overrideFile("gencast_direct.txt");
+
+		if (overrideFile.good())
+		{
+			std::string relayUrl;
+			std::getline(overrideFile, relayUrl);
+
+			while (!relayUrl.empty() &&
+				(relayUrl[relayUrl.size() - 1] == '\r' || relayUrl[relayUrl.size() - 1] == '\n' ||
+				 relayUrl[relayUrl.size() - 1] == ' ' || relayUrl[relayUrl.size() - 1] == '	'))
+			{
+				relayUrl.erase(relayUrl.size() - 1);
+			}
+
+			if (!relayUrl.empty())
+			{
+				m_Relay_Direct = true;
+				m_Relay_Direct_Url = relayUrl;
+
+				NetworkLog(ELogVerbosity::LOG_RELEASE,
+					"[NGMP] gencast_direct.txt: direct mode pinned to %s", relayUrl.c_str());
+			}
+		}
+	}
 }
 
 void GenOnlineSettings::Save()

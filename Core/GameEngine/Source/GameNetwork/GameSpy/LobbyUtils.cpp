@@ -403,7 +403,9 @@ static void gameTooltip(GameWindow* window,
 	}
 #endif
 #if defined(GENERALS_ONLINE)
-	if (lobbyEntry.exe_crc != TheGlobalData->m_exeCRC || lobbyEntry.ini_crc != TheGlobalData->m_iniCRC)
+	// Observer builds only spectate, so exe parity is not required. Workspace-local divergence -
+	// MUST NOT be pushed upstream: only ini_crc decides whether a lobby is joinable.
+	if (lobbyEntry.ini_crc != TheGlobalData->m_iniCRC)
 #else
 	if (room->getExeCRC() != TheGlobalData->m_exeCRC || room->getIniCRC() != TheGlobalData->m_iniCRC)
 #endif
@@ -709,8 +711,8 @@ struct GameSortStruct
 {
 	bool operator()(const LobbyEntry& g1, const LobbyEntry& g2) const
 	{
-		const bool g1Join = !(g1.exe_crc != TheGlobalData->m_exeCRC || g1.ini_crc != TheGlobalData->m_iniCRC);
-		const bool g2Join = !(g2.exe_crc != TheGlobalData->m_exeCRC || g2.ini_crc != TheGlobalData->m_iniCRC);
+		const bool g1Join = !(g1.ini_crc != TheGlobalData->m_iniCRC);
+		const bool g2Join = !(g2.ini_crc != TheGlobalData->m_iniCRC);
 
 		if (g1Join != g2Join)
 			return g1Join && !g2Join;
@@ -821,7 +823,7 @@ struct GameSortStruct
 static Int insertGame(GameWindow* win, LobbyEntry& lobbyInfo, Bool showMap)
 {
 	Color gameColor = GameSpyColor[GSCOLOR_GAME];
-	if (lobbyInfo.exe_crc != TheGlobalData->m_exeCRC || lobbyInfo.ini_crc != TheGlobalData->m_iniCRC)
+	if (lobbyInfo.ini_crc != TheGlobalData->m_iniCRC)
 	{
 		gameColor = GameSpyColor[GSCOLOR_GAME_CRCMISMATCH];
 	}
