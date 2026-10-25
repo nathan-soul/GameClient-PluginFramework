@@ -61,6 +61,52 @@ namespace
 		std::string body;
 	};
 
+	/*
+	**	The CA bundle that travels with the client.
+	**
+	**	This build links libcurl against a static OpenSSL, and OpenSSL on Windows has no access to
+	**	the system certificate store: with no bundle every https call fails certificate
+	**	verification while the same URL answers 200 from curl.exe, which uses Schannel. Direct
+	**	mode then looks completely dead - the client reports "relay unreachable" and the relay
+	**	never sees a request. The bundle sits next to the exe; CURL_CA_BUNDLE still wins when a
+	**	tester sets one, so this is a default, not a lock-in.
+	*/
+	std::string CaBundlePath()
+	{
+		if (getenv("CURL_CA_BUNDLE") != nullptr)
+		{
+			return std::string();
+		}
+
+		char exePath[MAX_PATH] = {};
+		const DWORD length = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+
+		if (length == 0 || length == MAX_PATH)
+		{
+			return std::string();
+		}
+
+		std::string path(exePath, length);
+		const size_t slash = path.find_last_of("\\/");
+
+		if (slash == std::string::npos)
+		{
+			return std::string();
+		}
+
+		path.erase(slash + 1);
+		path += "gencast_ca.pem";
+
+		const DWORD attributes = GetFileAttributesA(path.c_str());
+
+		if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+		{
+			return std::string();
+		}
+
+		return path;
+	}
+
 	bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 	{
 		CURL* curl = curl_easy_init();
@@ -79,6 +125,15 @@ namespace
 		curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToString);
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out.body);
+
+		// See CaBundlePath(): without this the static OpenSSL cannot verify the relay's
+		// certificate and every call fails before it leaves the machine.
+		const std::string caBundle = CaBundlePath();
+
+		if (!caBundle.empty())
+		{
+			curl_easy_setopt(curl, CURLOPT_CAINFO, caBundle.c_str());
+		}
 
 		curl_slist* headers = nullptr;
 		headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -250,8 +305,9 @@ namespace
 			// relay, so the tester's file and the server's agree on who said what. The libcurl
 			// banner names the TLS backend: a static build without a CA store fails every https
 			// call while Windows' own stack succeeds, and that is invisible from the URL alone.
-			GencastDebugLog("gencast: direct transport relay=%s client=%s instance=%d curl=%s",
-				BaseUrl().c_str(), GencastClientId(), GencastClientInstance(), curl_version());
+			GencastDebugLog("gencast: direct transport relay=%s client=%s instance=%d curl=%s ca=%s",
+				BaseUrl().c_str(), GencastClientId(), GencastClientInstance(), curl_version(),
+				CaBundlePath().empty() ? "none" : CaBundlePath().c_str());
 		}
 
 		EGencastMode Mode() const override { return EGencastMode::Direct; }
