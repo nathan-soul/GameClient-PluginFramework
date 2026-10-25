@@ -4,6 +4,7 @@
 #include "../OnlineServices_Init.h"
 
 #include <fstream>
+#include <filesystem>
 
 #define SETTINGS_KEY_CAMERA "camera"
 #define SETTINGS_KEY_CAMERA_MIN_HEIGHT "min_height"
@@ -75,19 +76,23 @@ float GenOnlineSettings::DetermineCameraMaxHeight()
 
 std::string GenOnlineSettings::GetAnticheatPlugin() const
 {
-    // An empty setting means "run without an anticheat plugin". Upstream settled on the same
-    // rule in 1efd12e92 ("skip anticheat plugin load when unconfigured"), and the overlay
-    // builds prove the live service accepts a client that reports no anticheat identity.
-    // The fallback that used to live here did the opposite: it silently forced EAC on any
-    // install that happened to ship easyanticheat.dll, and EAC cannot initialise in our
-    // environment (its DllMain hangs, see 59a1dee7e), so the client ended up advertising an
-    // anticheat it could not run.
-    if (m_Plugins_Anticheat.empty())
+    // A self-built client cannot satisfy EAC. The plugin only reports "running" when the game was
+    // started by EasyAntiCheat's own bootstrapper, with the signed product binary, and the EAC
+    // services are frequently unavailable on developer machines (on ours both EasyAntiCheat and
+    // EasyAntiCheat_EOS are installed but refuse to start). Loading the plugin anyway produces a
+    // hard "The AntiCheat external process is not running" dialog that blocks the online menu,
+    // while the service itself accepts a client that reports no anticheat identity - that is
+    // exactly what the overlay builds do, and they play online fine.
+    //
+    // So the fork ships without an anticheat plugin. A machine that really does have a working
+    // AC setup can opt back in by dropping gencast_anticheat.txt next to the exe.
+    if (!std::filesystem::exists("gencast_anticheat.txt"))
     {
-        NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] No anticheat plugin configured, running without one");
+        NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] Self-built client: no anticheat plugin (opt in with gencast_anticheat.txt)");
         return std::string();
     }
 
+    NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] gencast_anticheat.txt present, using configured plugin");
     return m_Plugins_Anticheat;
 }
 
