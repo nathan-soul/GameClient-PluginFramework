@@ -37,9 +37,9 @@
 #include "GameNetwork/GeneralsOnline/NGMP_interfaces.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
 
-#include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
-#include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
-#include "GameNetwork/GeneralsOnline/Vendor/libcurl/websockets.h"
+#include <curl/curl.h>
+#include <curl/multi.h>
+#include <curl/websockets.h>
 
 #include <cstdio>
 #include <cstdarg>

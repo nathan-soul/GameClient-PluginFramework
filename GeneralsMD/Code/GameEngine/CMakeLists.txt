@@ -1212,9 +1212,6 @@ target_include_directories(z_gameengine PUBLIC
     Include
 
     Include/GameNetwork/GeneralsOnline/Vendor/
-    # The vendored ValveNetworkingSockets headers are included as <steam/...>, which is the
-    # layout vcpkg used to provide. Point the compiler at the directory that contains steam/.
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets
 )
 
 target_include_directories(z_gameengine PRIVATE
@@ -1231,30 +1228,16 @@ target_link_libraries(z_gameengine PUBLIC
     z_wwvegas
 )
 
-# Generals Online networking dependencies are vendored under Source/GameNetwork/GeneralsOnline/Vendor
-# and linked by the #pragma comment(lib, ...) directives in OnlineServices_Init.h and
-# NextGenTransport.h. This fork keeps the vendored libraries instead of upstream's vcpkg
-# packages, so the msvc-wine build image needs no package manager.
+# Generals Online networking dependencies, provided by vcpkg (see vcpkg.json).
 if(NOT IS_VS6_BUILD)
-    target_link_directories(z_gameengine PUBLIC
-        Source/GameNetwork/GeneralsOnline/Vendor
-    )
+    find_package(CURL CONFIG REQUIRED)
+    find_package(GameNetworkingSockets CONFIG REQUIRED)
+    find_package(sentry CONFIG REQUIRED)
 
-    # Upstream links these through vcpkg's imported targets. With the vendored copies there is
-    # no target to depend on, so name the archives directly. GNS pulls in its own runtime
-    # dependencies, which are shipped alongside it.
-    set(GO_VENDOR "${CMAKE_CURRENT_SOURCE_DIR}/Source/GameNetwork/GeneralsOnline/Vendor")
     target_link_libraries(z_gameengine PUBLIC
-        "${GO_VENDOR}/libcurl/libcurl.lib"
-        "${GO_VENDOR}/sentry/sentry.lib"
-        "${GO_VENDOR}/libsodium/libsodium.lib"
-        "${GO_VENDOR}/ValveNetworkingSockets/GameNetworkingSockets.lib"
-        "${GO_VENDOR}/ValveNetworkingSockets/abseil_dll.lib"
-        "${GO_VENDOR}/ValveNetworkingSockets/libprotobuf.lib"
-        "${GO_VENDOR}/ValveNetworkingSockets/libssl.lib"
-        "${GO_VENDOR}/ValveNetworkingSockets/libcrypto.lib"
-        "${GO_VENDOR}/ValveNetworkingSockets/steamwebrtc.lib"
-        "${GO_VENDOR}/ValveNetworkingSockets/webrtc-lite.lib"
+        CURL::libcurl
+        GameNetworkingSockets::GameNetworkingSockets_s
+        sentry::sentry
     )
 endif()
 

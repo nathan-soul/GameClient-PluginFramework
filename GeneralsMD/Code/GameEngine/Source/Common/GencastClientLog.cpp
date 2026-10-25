@@ -10,7 +10,7 @@
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
 
-#include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
+#include <curl/curl.h>
 
 #include <chrono>
 #include <condition_variable>

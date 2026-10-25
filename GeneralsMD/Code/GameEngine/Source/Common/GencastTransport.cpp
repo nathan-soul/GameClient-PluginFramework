@@ -6,7 +6,7 @@
 #include "Common/LiveObserver.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 
-#include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
+#include <curl/curl.h>
 
 namespace
 {

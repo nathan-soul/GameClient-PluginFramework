@@ -9,7 +9,7 @@
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
 
-#include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
+#include <curl/curl.h>
 
 /*
 **	Direct transport: the client talks to the relay itself.

@@ -36,9 +36,9 @@
 
 #include "GameNetwork/GeneralsOnline/json.hpp"	// parses GO's register reply
 
-#include "GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h"
-#include "GameNetwork/GeneralsOnline/Vendor/libcurl/multi.h"
-#include "GameNetwork/GeneralsOnline/Vendor/libcurl/websockets.h"
+#include <curl/curl.h>
+#include <curl/multi.h>
+#include <curl/websockets.h>
 
 #include <cstdio>
 #include <cstdarg>
