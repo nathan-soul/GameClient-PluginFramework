@@ -1,0 +1,107 @@
+name: Build client (static deps)
+
+# Builds GeneralsOnlineZH_60.exe the way upstream does: vcpkg with the
+# x86-windows-static-md triplet, so curl, GameNetworkingSockets and sentry are linked
+# into the executable instead of being loaded as DLLs from the game folder.
+#
+# The Linux msvc-wine image cannot build these ports (OpenSSL wants nmake + Perl,
+# ffmpeg wants msys2), so this runs on a Windows runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (default: the branch this was dispatched from)"
+        required: false
+        default: ""
+      upload_dlls:
+        description: "Also upload every DLL the build produced (should be none of the GO ones)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite
+      VCPKG_FEATURE_FLAGS: manifests,versions,binarycaching
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Prepare vcpkg binary cache
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\vcpkg-bincache
+          key: vcpkg-bincache-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}
+          restore-keys: |
+            vcpkg-bincache-${{ runner.os }}-
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          runVcpkgInstall: false
+          doNotCache: true
+          # Only the root manifest; ports/ holds overlay port manifests without a baseline.
+          vcpkgJsonGlob: vcpkg.json
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          "VCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}\triplets" >> $env:GITHUB_ENV
+          cmake --preset win32-vcpkg `
+            -DRTS_BUILD_ZEROHOUR=ON `
+            -DRTS_BUILD_GENERALS=OFF `
+            -DRTS_BUILD_CORE_TOOLS=OFF `
+            -DRTS_BUILD_ZEROHOUR_TOOLS=OFF `
+            -DRTS_BUILD_CORE_EXTRAS=OFF `
+            -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset win32-vcpkg
+
+      - name: Collect artifact
+        shell: pwsh
+        run: |
+          $buildDir = "build\win32-vcpkg"
+          $out = New-Item -ItemType Directory -Force -Path "$buildDir\GeneralsMD\artifacts"
+          $files = Get-ChildItem -Path "$buildDir\Core\Release", "$buildDir\GeneralsMD\Release" -File `
+            -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".exe", ".dll") }
+          $files | Move-Item -Destination $out -Force
+          # Report what the client actually imports; the GO DLLs must not be listed here.
+          $exe = Join-Path $out "GeneralsOnlineZH_60.exe"
+          if (Test-Path $exe) {
+            $bytes = [IO.File]::ReadAllBytes($exe)
+            $text = [Text.Encoding]::GetEncoding(28591).GetString($bytes)
+            "exe size: $($bytes.Length) bytes"
+            foreach ($n in 'libcurl.dll','sentry.dll','GameNetworkingSockets.dll','abseil_dll.dll','libprotobuf.dll') {
+              $hits = ([regex]::Matches($text, [regex]::Escape($n))).Count
+              "import check: $n -> $hits"
+              if ($hits -ne 0) { throw "$n is still imported; the static link did not take effect" }
+            }
+          } else {
+            throw "GeneralsOnlineZH_60.exe was not produced"
+          }
+
+      - name: Upload client
+        uses: actions/upload-artifact@v4
+        with:
+          name: gencast-client-static
+          path: build\win32-vcpkg\GeneralsMD\artifacts
+          retention-days: 30
+          if-no-files-found: error
