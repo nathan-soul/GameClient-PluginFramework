@@ -29,6 +29,8 @@
 #include "Common/GameCommon.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
 #include "Common/FramePacer.h"		// the logic rate reported by MSG_STATS; see publishStats
 #include "GameNetwork/GeneralsOnline/NGMP_interfaces.h"
+// the announce reports the lobby's map, not the last loaded one
+#include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
 #include "GameNetwork/NetworkInterface.h"	// TheNetwork->getRunAhead(), this client's latency
 #include "GameClient/ClientInstance.h"
 #include "GameClient/InGameUI.h"
@@ -912,7 +914,24 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 			userId = (long)auth->GetUserID();
 		}
 
-		const char* mapName = TheGlobalData != nullptr ? TheGlobalData->m_mapName.str() : "";
+		// The map the lobby shows, not TheGlobalData->m_mapName: at match start that global
+		// still holds the map that was last *loaded* - the shell map - which is how
+		// "ShellMapMD" ended up on the relay while the players were on Defcon.
+		std::string mapName;
+		
+		NGMP_OnlineServices_LobbyInterface* lobbyInterface =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+		
+		if (lobbyInterface != nullptr && lobbyInterface->IsInLobby())
+		{
+			mapName = lobbyInterface->GetCurrentLobby().map_name;
+		}
+		
+		if (mapName.empty() && TheGlobalData != nullptr)
+		{
+			mapName = TheGlobalData->m_mapName.str();
+		}
+
 
 		transport->SetAnnounceContext(playerId, userId, displayName, mapName);
 
