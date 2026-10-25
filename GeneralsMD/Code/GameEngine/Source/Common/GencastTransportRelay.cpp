@@ -102,9 +102,12 @@ namespace
 
 		// One line per relay call: what we asked, what came back. This is the first thing to look
 		// at when direct mode does not behave, and it ships to the relay's own log.
-		GencastDebugLog("relay: %s %s -> status=%ld bytes=%zu%s",
+		// The curl reason is included: "curl failed" alone says nothing about whether it was DNS,
+		// a refused connection or certificate verification, and those need different fixes.
+		GencastDebugLog("relay: %s %s -> status=%ld bytes=%zu%s%s%s",
 			postBody != nullptr ? "POST" : "GET", url.c_str(), out.status, out.body.size(),
-			rc == CURLE_OK ? "" : " (curl failed)");
+			rc == CURLE_OK ? "" : " (curl failed: ", rc == CURLE_OK ? "" : curl_easy_strerror(rc),
+			rc == CURLE_OK ? "" : ")");
 
 		return rc == CURLE_OK;
 	}
@@ -244,9 +247,11 @@ namespace
 		RelayGencastTransport()
 		{
 			// Puts the client identity and the relay it is talking to in the log that ships to the
-			// relay, so the tester's file and the server's agree on who said what.
-			GencastDebugLog("gencast: direct transport relay=%s client=%s instance=%d",
-				BaseUrl().c_str(), GencastClientId(), GencastClientInstance());
+			// relay, so the tester's file and the server's agree on who said what. The libcurl
+			// banner names the TLS backend: a static build without a CA store fails every https
+			// call while Windows' own stack succeeds, and that is invisible from the URL alone.
+			GencastDebugLog("gencast: direct transport relay=%s client=%s instance=%d curl=%s",
+				BaseUrl().c_str(), GencastClientId(), GencastClientInstance(), curl_version());
 		}
 
 		EGencastMode Mode() const override { return EGencastMode::Direct; }
