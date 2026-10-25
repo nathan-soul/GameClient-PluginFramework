@@ -56,11 +56,13 @@ static AsciiString m_liveObserverStartLobbyId;
 static AsciiString s_liveObserverPassword;		// password for a password-protected stream
 static AsciiString s_liveObserverDisplayName;	// lobby name, for the password reprompt title
 static Int s_liveObserverDelaySeconds = -1;		// lobby broadcast delay, -1 = unknown
+static AsciiString s_liveObserverMatchId;		// which match of that lobby (direct mode, may be empty)
 
 // Records the intent only. doLiveObserverGameStart() blocks waiting for the relay's HEADER, so it
 // must not run while another screen is up; the pump fires it once the shell has settled.
 void StartLiveObserverSession(const AsciiString& lobbyId,
-	const AsciiString& password, const AsciiString& displayName, Int delaySeconds)
+	const AsciiString& password, const AsciiString& displayName, Int delaySeconds,
+	const AsciiString& matchId)
 {
 	if (lobbyId.isEmpty())
 		return;
@@ -84,9 +86,11 @@ void StartLiveObserverSession(const AsciiString& lobbyId,
 	s_liveObserverPassword = password;
 	s_liveObserverDisplayName = displayName;
 	s_liveObserverDelaySeconds = delaySeconds;
+	s_liveObserverMatchId = matchId;
 	startLiveObserverGame = TRUE;
 
-	liveObserverLog("StartLiveObserverSession: queued lobby %s\n", lobbyId.str());
+	liveObserverLog("StartLiveObserverSession: queued lobby %s match %s\n", lobbyId.str(),
+		matchId.isEmpty() ? "(unspecified)" : matchId.str());
 }
 
 // The join splits into a non-blocking connect and a playback start. The wait between them, for
@@ -118,6 +122,9 @@ void CancelLiveObserverPendingSession(void)
 	s_liveObserverPassword.clear();
 	s_liveObserverDisplayName.clear();
 	s_liveObserverDelaySeconds = -1;
+	// Nor its match: the next session names its own game, and a stale id would ask the relay for
+	// a match this viewer never picked.
+	s_liveObserverMatchId.clear();
 }
 
 Bool LiveObserverPendingSessionActive(void)
@@ -147,7 +154,7 @@ static Bool doLiveObserverConnect(void)
 	liveObserverLog("doLiveObserverConnect: connecting to relay for lobby %s\n",
 		m_liveObserverStartLobbyId.str());
 	TheLiveObserver->connect(m_liveObserverStartLobbyId, s_liveObserverPassword.str(),
-		s_liveObserverDelaySeconds);
+		s_liveObserverDelaySeconds, s_liveObserverMatchId);
 	return TRUE;
 }
 
@@ -227,12 +234,14 @@ Bool LiveObserverStartPendingSession(void)
 		s_observerJoinPhase = kObserverJoinIdle;
 		startLiveObserverGame = FALSE;
 
-		// The queue statics still hold the lobby id and display name - they are cleared by
+		// The queue statics still hold the lobby id, display name and match - they are cleared by
 		// CancelLiveObserverPendingSession or overwritten by the next StartLiveObserverSession.
+		// The reprompt keeps all three, so the retry asks the relay about the same game.
 		GSMessageBoxOk(TheGameText->fetch("GUI:JoinFailedDefault"),
 			TheGameText->fetch("GUI:JoinFailedBadPassword"), []()
 			{
-				liveWatchOpenPasswordPopup(m_liveObserverStartLobbyId, s_liveObserverDisplayName, FALSE);
+				liveWatchOpenPasswordPopup(m_liveObserverStartLobbyId, s_liveObserverDisplayName,
+					FALSE, s_liveObserverMatchId);
 			});
 
 		return FALSE;
@@ -320,7 +329,8 @@ namespace
 		}
 	}
 
-	void watchPasswordCheckThread(std::string lobbyId, std::string password, UnsignedInt epoch)
+	void watchPasswordCheckThread(std::string lobbyId, std::string password, std::string matchId,
+		UnsignedInt epoch)
 	{
 		WatchPasswordVerdict verdict = WatchPasswordVerdict::Unreachable;
 
@@ -336,11 +346,15 @@ namespace
 		}
 		else
 		{
-			const GencastAttemptResult attempt = transport->AttemptWatchSession(lobbyId, password);
+			// The same join the watch itself will make, match id included: probing another game
+			// of that lobby would answer for a stream this player never asked for.
+			const GencastAttemptResult attempt =
+				transport->AttemptWatchSession(lobbyId, password, matchId);
 			verdict = classifyWatchPasswordAnswer(attempt);
 		}
 
-		liveObserverLog("liveWatchPasswordGate: lobby=%s verdict=%d\n", lobbyId.c_str(), (Int)verdict);
+		liveObserverLog("liveWatchPasswordGate: lobby=%s match=%s verdict=%d\n", lobbyId.c_str(),
+			matchId.empty() ? "(unspecified)" : matchId.c_str(), (Int)verdict);
 
 		std::lock_guard<std::mutex> lock(s_passwordGateMutex);
 
@@ -358,7 +372,7 @@ namespace
 }
 
 void liveWatchValidatePassword(const AsciiString& lobbyId, const AsciiString& password,
-	WatchPasswordCallback done)
+	const AsciiString& matchId, WatchPasswordCallback done)
 {
 	if (!done)
 		return;
@@ -398,7 +412,7 @@ void liveWatchValidatePassword(const AsciiString& lobbyId, const AsciiString& pa
 	try
 	{
 		std::thread(watchPasswordCheckThread, std::string(lobbyId.str()),
-			std::string(password.str()), epoch).detach();
+			std::string(password.str()), std::string(matchId.str()), epoch).detach();
 	}
 	catch (...)
 	{

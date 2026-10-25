@@ -1714,6 +1714,12 @@ void NGMP_OnlineServices_LobbyInterface::LeaveCurrentLobby()
 	std::map<std::string, std::string> mapHeaders;
 	NGMP_OnlineServicesManager::GetInstance()->GetHTTPManager()->SendDELETERequest(strURI.c_str(), EIPProtocolVersion::DONT_CARE, mapHeaders, "", nullptr);
 
+	// The relay hears the same event on the same funnel: this player is no longer in that lobby.
+	// It decides what that means for the watch entry - drop it, or leave another streamer's
+	// entry standing - exactly as Services decides what the DELETE above means. Direct mode
+	// only, and a no-op when the client is not direct or has no seat to have announced under.
+	GencastUnannounceCurrentLobby();
+
 	// reset local data
 	ResetCachedRoomData();
 

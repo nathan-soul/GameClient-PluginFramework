@@ -53,9 +53,10 @@ public:
 	/// Start watching a livestream by GO lobby id. Non-blocking; spawns a background thread. The
 	/// relay URL comes from GO with the single-use watch ticket, so callers never build it.
 	/// expectedDelaySeconds (-1 = unknown) pre-seeds the countdown until the ticket or ROLE
-	/// pins the real value.
+	/// pins the real value. matchId names which match of that lobby to watch and is empty when
+	/// the caller has none: the relay then picks the newest game that has not ended.
 	void connect(const AsciiString& lobbyId, const std::string& password = std::string(),
-		Int expectedDelaySeconds = -1);
+		Int expectedDelaySeconds = -1, const AsciiString& matchId = AsciiString::TheEmptyString);
 
 	/// GO answered the ticket request with 401: the stream is password protected and the password
 	/// was missing or wrong. The join pump re-prompts instead of waiting out the retry window.
@@ -486,6 +487,12 @@ private:
 
 	AsciiString m_gameId;
 
+	/// Which match of that lobby to watch (direct mode). Written on the main thread before the
+	/// network thread spawns, read only by the network thread - same contract as m_password.
+	/// Empty means "whatever the relay considers newest", which is what a caller without match
+	/// ids has always sent.
+	AsciiString m_matchId;
+
 	// Password for a password-protected livestream, sent with the watch-ticket request. Written
 	// on the main thread before the network thread spawns, read only by the network thread -
 	// happens-before via thread creation, no lock needed.
@@ -567,6 +574,10 @@ void liveRelayCompleteExternalFetch(const std::string& body, Bool success, Int s
 struct LiveGameEntry
 {
 	AsciiString lobbyId;      ///< GO's LobbyID as decimal text; also the relay's session key.
+	/// Direct mode: which match of that lobby this row is (empty when the source has no ids).
+	/// A lobby can list a finished game beside the next one, so a watch that names only the
+	/// lobby can land on the wrong game - the relay then picks the newest one that has not ended.
+	AsciiString matchId;
 	AsciiString name;         ///< The lobby's display name (popup titles, diagnostics).
 	AsciiString mapName;      ///< Display name, never a path.
 	AsciiString players;      ///< Human players, comma separated.
@@ -575,6 +586,9 @@ struct LiveGameEntry
 	Int ageSeconds;
 	Int state;                ///< 1 = live stream, 0 = pre-game lobby (read-only observe).
 	Bool passworded;
+	/// Direct mode only: the match is over and the relay is still serving it (post-game hold).
+	/// Watchable, but not a lobby anyone can sit in, so it must never take the pre-game path.
+	Bool ended;
 	Int pendingObserverCount; ///< Pre-game observers waiting on this lobby (0 when live).
 
 	/// What GO says to do with this row, computed per viewer:
@@ -592,7 +606,7 @@ struct LiveGameEntry
 	Bool priority;
 
 	LiveGameEntry() : observerCount(0), delaySeconds(0), ageSeconds(0),
-		state(1), passworded(FALSE), pendingObserverCount(0),
+		state(1), passworded(FALSE), ended(FALSE), pendingObserverCount(0),
 		watchAction(2), delayRemainingSeconds(0), priority(FALSE) {}
 };
 

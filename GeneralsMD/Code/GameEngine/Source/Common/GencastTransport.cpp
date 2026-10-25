@@ -122,7 +122,7 @@ EGencastMode GencastTransport::DetermineMode()
 **	wrong password stops immediately: retrying it would lock the player out of their own lobby.
 */
 void GencastTransport::RequestWatchSession(const std::string& lobbyId,
-	const std::string& password, GencastSessionCallback done,
+	const std::string& password, const std::string& matchId, GencastSessionCallback done,
 	GencastCancelPredicate cancelled)
 {
 	// 20s covers the announce/liveness race; anything longer feels like a hang.
@@ -152,7 +152,7 @@ void GencastTransport::RequestWatchSession(const std::string& lobbyId,
 			return;
 		}
 
-		const GencastAttemptResult attempt = AttemptWatchSession(lobbyId, password);
+		const GencastAttemptResult attempt = AttemptWatchSession(lobbyId, password, matchId);
 
 		switch (attempt.kind)
 		{
@@ -241,66 +241,116 @@ GencastTransport* GencastTransport::Create()
 **	the relay refuses the stream to a lobby whose bound announcer announced under a different
 **	player id, and GO seats players contiguously from slot 0, so the two agree.
 */
+namespace
+{
+	/*
+	**	Who is speaking, about which game, in direct mode.
+	**
+	**	One resolver for the three lifecycle calls (announce, unannounce, end), because they have
+	**	to agree: an unannounce that names a different player than the announce was sent under is
+	**	a no-op at the relay, and an end that names the wrong match starts a post-game hold on
+	**	somebody else's game. Reading it once also keeps the "is direct mode even on" and "is this
+	**	player seated" tests in a single place.
+	*/
+	struct DirectLobbyIdentity
+	{
+		std::string lobbyId;	// GO's LobbyID as decimal text, spelled the way GO prints it
+		uint64_t matchId = 0;	// GetCurrentMatchID(); 0 is a client bug, reported by the user
+		long playerId = 0;		// 1-based wire slot, the id the relay binds the announce to
+		long userId = 0;		// GO Services user id; the relay prefers it as player identity
+		std::string displayName;
+		std::string mapName;	// GO's map name, empty until the host has picked one
+	};
+
+	bool ResolveDirectLobbyIdentity(DirectLobbyIdentity& out)
+	{
+		if (!NGMP_OnlineServicesManager::Settings.Relay_Direct() ||
+			NGMP_OnlineServicesManager::Settings.Relay_Direct_Url().empty())
+		{
+			// Without a URL the transport resolves to the Services mode, whose reachability probe
+			// (a blocking HEAD) has no business running from a lobby refresh.
+			return false;
+		}
+
+		// Switched off means this client would not announce at match start either. An entry
+		// nobody can stream is worse than no entry: the watch list would advertise a lobby a
+		// viewer cannot be given a session for.
+		if (TheGlobalData == nullptr || !TheGlobalData->m_liveStreamEnabled)
+		{
+			return false;
+		}
+
+		NGMP_OnlineServices_LobbyInterface* lobbyInterface =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+		if (lobbyInterface == nullptr || !lobbyInterface->IsInLobby())
+		{
+			return false;
+		}
+
+		NGMP_OnlineServices_AuthInterface* authInterface =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+
+		if (authInterface == nullptr)
+		{
+			return false;
+		}
+
+		const int64_t userId = authInterface->GetUserID();
+
+		if (userId <= 0)
+		{
+			// No Services id to bind the announce to. Anything invented here would attach a
+			// stranger's password to this lobby.
+			return false;
+		}
+
+		const LobbyEntry& lobby = lobbyInterface->GetCurrentLobby();
+
+		const LobbyMemberEntry* localMember = nullptr;
+
+		for (const LobbyMemberEntry& member : lobby.members)
+		{
+			if (member.user_id == userId)
+			{
+				localMember = &member;
+				break;
+			}
+		}
+
+		if (localMember == nullptr || localMember->m_SlotIndex == LobbyMemberEntry::SLOT_INDEX_NONE)
+		{
+			// In the lobby but not seated yet: there is no wire slot to announce under, and being
+			// seated is itself a lobby change, so this runs again as soon as the seat is known.
+			return false;
+		}
+
+		// GO's identity for the game in this lobby. Set before the announce runs (UpdateRoomDataCache
+		// stores it, then calls the announce), and never 0 for a real lobby; the relay keys its
+		// entry on it, so the three calls have to quote the same one.
+		out.matchId = lobbyInterface->GetCurrentMatchID();
+
+		char lobbyId[32];
+		snprintf(lobbyId, sizeof(lobbyId), "%lld", (long long)lobby.lobbyID);
+		out.lobbyId = lobbyId;
+
+		// 1-based wire slot, as the streamer announces it: the relay rejects player id 0 outright
+		// and Generals' slot indices are 0-based.
+		out.playerId = (long)localMember->m_SlotIndex + 1;
+		out.userId = (long)userId;
+		out.displayName = localMember->display_name;
+		out.mapName = lobby.map_name;
+
+		return true;
+	}
+}
+
 void GencastAnnounceCurrentLobby()
 {
-	if (!NGMP_OnlineServicesManager::Settings.Relay_Direct() ||
-		NGMP_OnlineServicesManager::Settings.Relay_Direct_Url().empty())
+	DirectLobbyIdentity identity;
+
+	if (!ResolveDirectLobbyIdentity(identity))
 	{
-		// Without a URL the transport resolves to the Services mode, whose reachability probe
-		// (a blocking HEAD) has no business running from a lobby refresh.
-		return;
-	}
-
-	// Switched off means this client would not announce at match start either. An entry nobody
-	// can stream is worse than no entry: the watch list would advertise a lobby a viewer cannot
-	// be given a session for.
-	if (TheGlobalData == nullptr || !TheGlobalData->m_liveStreamEnabled)
-	{
-		return;
-	}
-
-	NGMP_OnlineServices_LobbyInterface* lobbyInterface =
-		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
-
-	if (lobbyInterface == nullptr || !lobbyInterface->IsInLobby())
-	{
-		return;
-	}
-
-	NGMP_OnlineServices_AuthInterface* authInterface =
-		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
-
-	if (authInterface == nullptr)
-	{
-		return;
-	}
-
-	const int64_t userId = authInterface->GetUserID();
-
-	if (userId <= 0)
-	{
-		// No Services id to bind the announce to. Anything invented here would attach a
-		// stranger's password to this lobby.
-		return;
-	}
-
-	const LobbyEntry& lobby = lobbyInterface->GetCurrentLobby();
-
-	const LobbyMemberEntry* localMember = nullptr;
-
-	for (const LobbyMemberEntry& member : lobby.members)
-	{
-		if (member.user_id == userId)
-		{
-			localMember = &member;
-			break;
-		}
-	}
-
-	if (localMember == nullptr || localMember->m_SlotIndex == LobbyMemberEntry::SLOT_INDEX_NONE)
-	{
-		// In the lobby but not seated yet: there is no wire slot to announce under, and being
-		// seated is itself a lobby change, so this runs again as soon as the seat is known.
 		return;
 	}
 
@@ -320,7 +370,7 @@ void GencastAnnounceCurrentLobby()
 	static std::mutex s_mapMutex;
 	static std::string s_lastMapName;
 
-	std::string mapName = lobby.map_name;
+	std::string mapName = identity.mapName;
 
 	{
 		std::scoped_lock<std::mutex> lock(s_mapMutex);
@@ -340,9 +390,6 @@ void GencastAnnounceCurrentLobby()
 		return;
 	}
 
-	char lobbyId[32];
-	snprintf(lobbyId, sizeof(lobbyId), "%lld", (long long)lobby.lobbyID);
-
 	std::unique_ptr<GencastTransport> transport(GencastTransport::Create());
 
 	if (transport == nullptr)
@@ -350,11 +397,61 @@ void GencastAnnounceCurrentLobby()
 		return;
 	}
 
-	// 1-based wire slot, as the streamer announces it: the relay rejects player id 0 outright and
-	// Generals' slot indices are 0-based.
-	transport->SetAnnounceContext((long)localMember->m_SlotIndex + 1, (long)userId,
-		localMember->display_name, mapName);
-	transport->AnnounceLobby(lobbyId, state);
+	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName, mapName);
+	transport->AnnounceLobby(identity.lobbyId, state);
+}
+
+/*
+**	The leave funnel and the match end, resolved the same way the announce is.
+**
+**	Both hand the request to the transport, which sends it from a worker: these are called from
+**	LeaveCurrentLobby and from the Recorder's teardown, on the game thread, and the relay's
+**	five second timeout has no place in a frame.
+**
+**	Created through CreateRelayGencastTransport() rather than GencastTransport::Create(): the
+**	mode is already known to be direct (the resolver just tested the settings), and Create()
+**	re-runs the probe, which can reach GO with a blocking HEAD.
+*/
+void GencastUnannounceCurrentLobby()
+{
+	DirectLobbyIdentity identity;
+
+	if (!ResolveDirectLobbyIdentity(identity))
+	{
+		return;
+	}
+
+	std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+
+	if (transport == nullptr)
+	{
+		return;
+	}
+
+	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName,
+		identity.mapName);
+	transport->UnannounceLobby(identity.lobbyId, identity.matchId);
+}
+
+void GencastEndCurrentMatch(const char* reason)
+{
+	DirectLobbyIdentity identity;
+
+	if (!ResolveDirectLobbyIdentity(identity))
+	{
+		return;
+	}
+
+	std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+
+	if (transport == nullptr)
+	{
+		return;
+	}
+
+	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName,
+		identity.mapName);
+	transport->EndMatch(identity.lobbyId, identity.matchId, reason);
 }
 
 #endif // GENERALS_ONLINE

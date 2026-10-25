@@ -39,11 +39,13 @@
 /// password is the password of a password-protected stream (sent with the watch-ticket request);
 /// displayName is the lobby's name, used to title the password reprompt popup; delaySeconds is
 /// the lobby's broadcast delay (-1 = unknown), which pre-seeds the countdown and join timeout
-/// until GO's admission hold or the relay's ROLE pins the real value.
+/// until GO's admission hold or the relay's ROLE pins the real value; matchId names which match
+/// of that lobby to watch (direct mode - empty means "whichever the relay considers newest").
 void StartLiveObserverSession(const AsciiString& lobbyId,
 	const AsciiString& password = AsciiString::TheEmptyString,
 	const AsciiString& displayName = AsciiString::TheEmptyString,
-	Int delaySeconds = -1);
+	Int delaySeconds = -1,
+	const AsciiString& matchId = AsciiString::TheEmptyString);
 
 /// Abort a queued or connecting live-observer session. The only other way out is the join
 /// timeout; the read-only lobby view needs LEAVE to cancel mid-wait.
@@ -98,8 +100,13 @@ using WatchPasswordCallback = std::function<void(WatchPasswordVerdict verdict)>;
 /// Ask the relay whether it would accept this password, without opening a session and without
 /// touching any screen. A check already in the air is superseded: only the newest answer is
 /// delivered, and a callback of a superseded or cancelled check is never called.
+///
+/// matchId names the game the way the watch itself will, because the probe is the same
+/// POST /direct/join: without it a finished match in its post-game hold (or the second game of a
+/// reused lobby) is probed as "the newest game that has not ended", which answers 404 and would
+/// refuse a password that is in fact right.
 void liveWatchValidatePassword(const AsciiString& lobbyId, const AsciiString& password,
-	WatchPasswordCallback done);
+	const AsciiString& matchId, WatchPasswordCallback done);
 
 /// Deliver a finished check's answer to its continuation. Must be pumped by every screen the
 /// password popup can be open over; it runs UI code, so only from the main thread.

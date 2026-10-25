@@ -248,6 +248,20 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		return slots;
 	}
 
+	/// GO's identity for the match in the lobby this client is in, 0 when GO has none.
+	///
+	/// The relay keys a watch entry on this, not on the lobby: a finished match in its post-game
+	/// hold and the next match in the same lobby are two entries. GO knows the id from the moment
+	/// the lobby exists (UpdateRoomDataCache stores it before the announce runs), so a real lobby
+	/// always answers with one; 0 is a client bug and is reported where it is used.
+	uint64_t CurrentMatchId()
+	{
+		NGMP_OnlineServices_LobbyInterface* lobby =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+		return lobby != nullptr ? lobby->GetCurrentMatchID() : 0;
+	}
+
 	class RelayGencastTransport : public GencastTransport
 	{
 	public:
@@ -294,6 +308,22 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 				{
 					GencastWatchEntry entry;
 					entry.lobbyId = lobby.value("lobby_id", "");
+					// A lobby can list a finished match next to the next one, so the row has to
+					// say which game it is. The relay prints it as a string; a number is read
+					// too rather than failing the whole list over the type of one field.
+					if (lobby.contains("match_id"))
+					{
+						const nlohmann::json& matchId = lobby["match_id"];
+
+						if (matchId.is_string())
+						{
+							entry.matchId = matchId.get<std::string>();
+						}
+						else if (matchId.is_number())
+						{
+							entry.matchId = matchId.dump();
+						}
+					}
 					entry.mapName = lobby.value("map_name", "");
 					entry.state = lobby.value("state", "");
 					entry.hasPassword = lobby.value("has_password", false);
@@ -321,13 +351,22 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		}
 
 		GencastAttemptResult AttemptWatchSession(const std::string& lobbyId,
-			const std::string& password) override
+			const std::string& password, const std::string& matchId) override
 		{
 			GencastAttemptResult result;
 
 			nlohmann::json request;
 			request["lobby_id"] = lobbyId;
 			request["password"] = password;
+
+			// Which match of that lobby to watch. Without it the relay picks the newest game that
+			// has not ended, which is the wrong one when a finished match is still in its post-game
+			// hold beside the next: a viewer who clicked "ended" would be handed the new match, or
+			// the 404 that means "no stream yet". Empty for callers that only know the lobby.
+			if (!matchId.empty())
+			{
+				request["match_id"] = matchId;
+			}
 
 			// dump() throws on invalid UTF-8, and the password comes straight from a text
 			// entry. Serialising outside a try would let that exception escape into the
@@ -599,7 +638,134 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		void SubscribeLobbyUpdates(const std::string&) override {}
 		void UnsubscribeLobbyUpdates() override {}
 
+		/// "This player is no longer in that lobby" - the relay's half of GO's DELETE {Lobby}/{id}.
+		///
+		/// Reached from LeaveCurrentLobby, which is the only leave funnel: host-disband and
+		/// member-leave both come through here, and the relay - which holds the announcer binding
+		/// - decides whether that drops the watch entry or leaves another streamer's alone.
+		void UnannounceLobby(const std::string& lobbyId, uint64_t matchId) override
+		{
+			if (m_playerId <= 0)
+			{
+				// The relay rejects player id 0 outright, and an announce under no player id
+				// never created an entry to drop.
+				GencastDebugLog("gencast: unannounce lobby=%s skipped, no player id", lobbyId.c_str());
+				return;
+			}
+
+			const std::string body = BuildLifecycleBody(lobbyId, matchId, nullptr);
+
+			if (body.empty())
+			{
+				GencastDebugLog("gencast: unannounce lobby=%s skipped, details unencodable",
+					lobbyId.c_str());
+				return;
+			}
+
+			{
+				// The relay no longer holds an entry for this lobby, so the announce that follows
+				// a re-join must go out even if it is byte for byte the last one: without this,
+				// leaving a lobby and coming back to it would leave it unannounced for as long as
+				// nothing about it changes.
+				std::scoped_lock<std::mutex> lock(s_announceMutex);
+				s_lastAnnounceBody.clear();
+			}
+
+			NetworkLog(ELogVerbosity::LOG_RELEASE, "[GENCAST] relay unannounce lobby=%s match=%llu",
+				lobbyId.c_str(), (unsigned long long)matchId);
+
+			PostLifecycle("/direct/unannounce", lobbyId, matchId, body);
+		}
+
+		/// "The match is over" - starts the relay's post-game hold for this match.
+		///
+		/// Announcer-only at the relay, which answers 200 and does nothing for anyone else, so a
+		/// client that was not the one streaming it cannot end somebody else's game.
+		void EndMatch(const std::string& lobbyId, uint64_t matchId, const char* reason) override
+		{
+			if (m_playerId <= 0)
+			{
+				GencastDebugLog("gencast: end lobby=%s skipped, no player id", lobbyId.c_str());
+				return;
+			}
+
+			const std::string body = BuildLifecycleBody(lobbyId, matchId, reason);
+
+			if (body.empty())
+			{
+				GencastDebugLog("gencast: end lobby=%s skipped, details unencodable", lobbyId.c_str());
+				return;
+			}
+
+			NetworkLog(ELogVerbosity::LOG_RELEASE,
+				"[GENCAST] relay end lobby=%s match=%llu reason=%s", lobbyId.c_str(),
+				(unsigned long long)matchId, reason != nullptr ? reason : "");
+
+			PostLifecycle("/direct/end", lobbyId, matchId, body);
+		}
+
 	private:
+		/// The body /direct/unannounce and /direct/end share: which game, and who is saying so.
+		///
+		/// Both name the game the same way - (lobby_id, match_id) - because that pair is what the
+		/// relay resolves a lifecycle call to. reason is /direct/end's, and null for unannounce,
+		/// where the relay has nothing to explain.
+		std::string BuildLifecycleBody(const std::string& lobbyId, uint64_t matchId,
+			const char* reason)
+		{
+			nlohmann::json request;
+			request["lobby_id"] = lobbyId;
+			request["player_id"] = m_playerId;
+			// A uint64 as a string: JSON numbers are doubles to some readers, and GO's match ids
+			// are handed out by a service this client does not control.
+			request["match_id"] = std::to_string(matchId);
+
+			if (reason != nullptr)
+			{
+				request["reason"] = reason;
+			}
+
+			try
+			{
+				return request.dump();
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				return std::string();
+			}
+		}
+
+		/// POST one lifecycle report on a worker and forget it.
+		///
+		/// Both callers run on the game thread (leaving a lobby, the end of a match), and
+		/// Perform() is synchronous with a five second timeout: sending inline would spend that
+		/// timeout in a frame whenever the relay is slow. The worker holds nothing but strings, so
+		/// the transport may be deleted under it - the same contract as the announce.
+		void PostLifecycle(const char* path, const std::string& lobbyId, uint64_t matchId,
+			const std::string& body)
+		{
+			const std::string url = BaseUrl() + path;
+			const std::string pathCopy = path;
+
+			std::thread([url, pathCopy, body, lobbyId, matchId]()
+				{
+					HttpResponse response;
+					const bool answered = Perform(url, body.c_str(), response);
+
+					if (!answered || response.status != 200)
+					{
+						GencastDebugLog("gencast: %s lobby=%s match=%llu -> %s status=%ld",
+							pathCopy.c_str(), lobbyId.c_str(), (unsigned long long)matchId,
+							answered ? "refused" : "relay unreachable", response.status);
+						return;
+					}
+
+					GencastDebugLog("gencast: %s lobby=%s match=%llu -> status=%ld",
+						pathCopy.c_str(), lobbyId.c_str(), (unsigned long long)matchId,
+						response.status);
+				}).detach();
+		}
+
 		/// The /direct/announce body for the lobby as it is right now.
 		///
 		/// Shared by both announce paths so they cannot disagree about what a lobby looks like:
@@ -611,6 +777,25 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 			nlohmann::json request;
 			request["lobby_id"] = lobbyId;
 			request["player_id"] = m_playerId;
+
+			// The entry's identity at the relay. A lobby can list a finished match beside the
+			// next one, so lobby_id alone is metadata now; match_id is what the relay keys on,
+			// unannounce and end target, and the watch list names a row by.
+			//
+			// GO has this from the moment the lobby exists, so 0 means the client asked before
+			// GO said (or a GO that never sends MatchID). It is sent rather than omitted: the
+			// relay then keys the entry on the lobby id - the game stays watchable - and logs
+			// the anomaly on both sides instead of dropping the entry.
+			const uint64_t matchId = CurrentMatchId();
+
+			if (matchId == 0)
+			{
+				GencastDebugLog("gencast: announce lobby=%s has no match id (GetCurrentMatchID=0), "
+					"the relay will key this entry on the lobby id",
+					lobbyId.c_str());
+			}
+
+			request["match_id"] = std::to_string(matchId);
 
 			// The relay keys its player record on the Services user id and only falls back to
 			// the wire player id, so an unknown id is left out rather than sent as -1.

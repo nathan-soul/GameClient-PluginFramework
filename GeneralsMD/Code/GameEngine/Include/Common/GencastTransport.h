@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -45,8 +46,13 @@ const char* GencastStreamStateName(EGencastStreamState state);
 struct GencastWatchEntry
 {
 	std::string lobbyId;
+	// Which match of that lobby this row is. A lobby can list a finished game next to the next
+	// one, so the id is what names the game the viewer clicked; empty when the relay has none.
+	std::string matchId;
 	std::string mapName;
 	std::string playersJson;
+	// "pregame" while the players are seating, "live" while the match runs, "ended" during the
+	// relay's post-game hold: still watchable, no longer a lobby.
 	std::string state;
 	bool hasPassword = false;
 };
@@ -128,14 +134,19 @@ public:
 	// watchable, and the reporting of a hold, are the same problem in both modes and live in
 	// RequestWatchSession() below. A transport only says what the server answered.
 	//
+	// matchId names which match of that lobby to watch, and is empty when the caller does not
+	// know one: the relay then picks the newest game that has not ended, which is what every
+	// caller did before match ids existed. A caller that does know one must say it, or a viewer
+	// who clicked a finished match gets the next one instead.
+	//
 	// cancelled is polled between attempts and during the wait: the observer's close() joins
 	// the thread that calls this, so a viewer who leaves mid-retry must not wait out the whole
 	// window. Unset means "never cancelled".
 	virtual GencastAttemptResult AttemptWatchSession(const std::string& lobbyId,
-		const std::string& password) = 0;
+		const std::string& password, const std::string& matchId) = 0;
 
 	void RequestWatchSession(const std::string& lobbyId, const std::string& password,
-		GencastSessionCallback done,
+		const std::string& matchId, GencastSessionCallback done,
 		GencastCancelPredicate cancelled = GencastCancelPredicate());
 
 	// Called by the shared policy when the viewer's hold state changes: waiting behind an
@@ -174,6 +185,22 @@ public:
 	virtual void SetAnnounceContext(long playerId, long userId, const std::string& displayName,
 		const std::string& mapName) {}
 
+	/*
+	**	The relay's lobby lifecycle, from the client's side.
+	**
+	**	The client reports the same two events to the relay that it reports to GO Services - "I
+	**	left that lobby" and "the match is over" - and the relay decides what each means. It does
+	**	not know whether it is the host disbanding a lobby or a member walking out of somebody
+	**	else's, and it must not guess: the relay already has the announcer binding, so it can.
+	**
+	**	Both are fire-and-forget: nobody waits on the answer, both are reached from the game
+	**	thread (leaving a lobby, the end of a match) and the request is sent from a worker. Match
+	**	ids are GO's uint64 identity for the game, not the lobby: one lobby can list a finished
+	**	match next to the next one.
+	*/
+	virtual void UnannounceLobby(const std::string& lobbyId, uint64_t matchId) {}
+	virtual void EndMatch(const std::string& lobbyId, uint64_t matchId, const char* reason) {}
+
 	virtual void SubscribeLobbyUpdates(const std::string& lobbyId) = 0;
 	virtual void UnsubscribeLobbyUpdates() = 0;
 
@@ -199,3 +226,22 @@ GencastTransport* CreateRelayGencastTransport();
 **	announcing, in which phase, and whether anything actually changed - is in one place.
 */
 void GencastAnnounceCurrentLobby();
+
+/*
+**	"Nothing here belongs to us any more" and "our match is over", reported to the relay.
+**
+**	Same funnel as the announce and for the same reason: the caller says what happened in the
+**	game, and everything direct mode needs to turn that into a request - which lobby, which
+**	match, under which player id - is resolved here. No-op outside direct mode, so callers need
+**	no mode test of their own.
+**
+**	UnannounceCurrentLobby goes on the single leave funnel
+**	(NGMP_OnlineServices_LobbyInterface::LeaveCurrentLobby), beside the DELETE that tells GO
+**	Services, because host-disband and member-leave are the same event to this client: "this
+**	player is no longer in that lobby". The relay decides which of the two it was.
+**
+**	EndCurrentMatch is for the announcer of a live match that just finished; it starts the
+**	relay's post-game hold instead of leaving the entry looking live until it is reaped.
+*/
+void GencastUnannounceCurrentLobby();
+void GencastEndCurrentMatch(const char* reason);

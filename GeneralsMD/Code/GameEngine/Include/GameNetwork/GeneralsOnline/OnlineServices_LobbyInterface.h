@@ -591,7 +591,10 @@ public:
 
 	uint64_t GetCurrentMatchID()
 	{
-		return m_CurrentMatchID;
+		// Atomic because the direct announce reads it from the streamer's network thread as well
+		// as from the lobby's own callers: a plain 64-bit read on a 32-bit build can tear, and a
+		// torn match id would announce a game that does not exist.
+		return m_CurrentMatchID.load();
 	}
 
 private:
@@ -623,5 +626,7 @@ private:
 
 	bool m_bMarkedGameAsFinished = false;
 
-	uint64_t m_CurrentMatchID = 0;
+	// GO's MatchID of the lobby's current match, read by the direct announce on the game thread
+	// and on the streamer's network thread (see GetCurrentMatchID).
+	std::atomic<uint64_t> m_CurrentMatchID = 0;
 };

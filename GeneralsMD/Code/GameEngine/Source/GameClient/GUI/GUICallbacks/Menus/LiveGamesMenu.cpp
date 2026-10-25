@@ -60,7 +60,9 @@
 // is guarded by s_liveGamesMode and the replay behaviour is untouched when it is off.
 static Bool s_liveGamesMode = FALSE;
 static std::vector<AsciiString> s_liveGameIds;	///< game id per listbox row
+static std::vector<AsciiString> s_liveGameMatchIds;	///< which match of that lobby, empty = newest
 static std::vector<Bool> s_liveGameIsLive;		///< TRUE = join now (watch_action 2)
+static std::vector<Bool> s_liveGameEnded;		///< TRUE = finished match, still watchable
 static std::vector<Bool> s_liveGamePassworded;	///< stream (or lobby) is password protected
 static std::vector<AsciiString> s_liveGameNames;	///< lobby display name, for the password popup
 static std::vector<Int> s_liveGameDelaySeconds;	///< broadcast delay per row, -1 = unknown
@@ -133,9 +135,16 @@ static void liveGamesRelayFetchThread(void)
 					nlohmann::json row;
 					// lobby_id is a number in the shared parser's contract.
 					row["lobby_id"] = (long long)atoll(it->lobbyId.c_str());
+					// The row's game, not just its lobby: a lobby can list the match that just
+					// finished next to the one that is running, and the viewer picks one of them.
+					row["match_id"] = it->matchId;
 					row["map_name"] = it->mapName;
 					row["name"] = it->mapName;
 					row["state"] = (it->state == "live") ? 1 : 0;
+					// A third phase, and the one the shared parser has no GO equivalent for: the
+					// relay still serves a finished match for a while. It is watchable, but it is
+					// not a lobby, so the row says so rather than being folded into pre-game.
+					row["ended"] = (it->state == "ended");
 					row["passworded"] = it->hasPassword;
 
 					nlohmann::json players = nlohmann::json::array();
@@ -291,17 +300,31 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 		return;
 
 	// Repopulating clears the selection, so remember it and restore by game id afterwards -
-	// by id and not row, since a game ending shifts every row beneath it.
+	// by id and not row, since a game ending shifts every row beneath it. The match id comes
+	// too: one lobby can hold two rows (the match that ended and the next one), and restoring on
+	// the lobby alone would move the selection to whichever of them happens to be first.
 	AsciiString previouslySelected;
+	AsciiString previouslySelectedMatch;
 	{
 		Int wasSelected = -1;
 		GadgetListBoxGetSelected(s_listbox, &wasSelected);
 		if (wasSelected >= 0 && wasSelected < (Int)s_liveGameIds.size())
+		{
 			previouslySelected = s_liveGameIds[wasSelected];
+
+			if (wasSelected < (Int)s_liveGameMatchIds.size())
+				previouslySelectedMatch = s_liveGameMatchIds[wasSelected];
+		}
 	}
 
 	GadgetListBoxReset(s_listbox);
 	s_liveGameIds.clear();
+	s_liveGameMatchIds.clear();
+	s_liveGameIsLive.clear();
+	s_liveGameEnded.clear();
+	s_liveGamePassworded.clear();
+	s_liveGameNames.clear();
+	s_liveGameDelaySeconds.clear();
 
 	if (!success || statusCode != 200)
 	{
@@ -338,10 +361,12 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 	for (std::vector<LiveGameEntry>::const_iterator it = games.begin(); it != games.end(); ++it)
 	{
 		const LiveGameEntry& game = *it;
-		const Bool isLive = (game.watchAction == 2);
+		const Bool isEnded = game.ended;
+		const Bool isLive = (game.watchAction == 2) && !isEnded;
 		const Bool isWaiting = (game.watchAction == 1);
 		// Priority-player matches render gold (all row kinds) so they stand out on top of
-		// the priority-first sort.
+		// the priority-first sort. A finished match is grey like a pre-game lobby: nothing is
+		// running any more, and only its label says you can still watch it.
 		const Color rowColor = game.priority ? GameMakeColor(255, 215, 0, 255)
 			: isLive ? GameMakeColor(255, 255, 255, 255)
 			: GameMakeColor(200, 200, 200, 255);
@@ -356,7 +381,22 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 		if (row < 0)
 			continue;
 
-		if (isLive)
+		if (isEnded)
+		{
+			// The match is over and the relay is still serving it: watchable from the start for as
+			// long as the post-game hold lasts, but not a lobby anyone can sit in. It therefore
+			// takes the watch path and never the pre-game one, and the columns say nothing about
+			// a duration or a viewer count that no longer exist.
+			text = UnicodeString(L"ENDED");
+			GadgetListBoxAddEntryText(s_listbox, text, rowColor, row, 1);
+
+			text = game.passworded ? UnicodeString(L"PASSWORDED") : UnicodeString(L"");
+			GadgetListBoxAddEntryText(s_listbox, text, rowColor, row, 2);
+
+			text = UnicodeString(L"");
+			GadgetListBoxAddEntryText(s_listbox, text, rowColor, row, 3);
+		}
+		else if (isLive)
 		{
 			tmp.format("%dm in", game.ageSeconds / 60);
 			text.translate(tmp);
@@ -414,13 +454,17 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 		if ((Int)s_liveGameIds.size() <= row)
 		{
 			s_liveGameIds.resize(row + 1);
+			s_liveGameMatchIds.resize(row + 1);
 			s_liveGameIsLive.resize(row + 1);
+			s_liveGameEnded.resize(row + 1);
 			s_liveGamePassworded.resize(row + 1);
 			s_liveGameNames.resize(row + 1);
 			s_liveGameDelaySeconds.resize(row + 1);
 		}
 		s_liveGameIds[row] = game.lobbyId;
-		s_liveGameIsLive[row] = isLive;
+		s_liveGameMatchIds[row] = game.matchId;
+		s_liveGameIsLive[row] = (game.watchAction == 2);
+		s_liveGameEnded[row] = isEnded;
 		s_liveGamePassworded[row] = game.passworded;
 		s_liveGameNames[row] = game.name;
 		s_liveGameDelaySeconds[row] = game.delaySeconds;
@@ -430,11 +474,17 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 	{
 		for (Int i = 0; i < (Int)s_liveGameIds.size(); ++i)
 		{
-			if (s_liveGameIds[i] == previouslySelected)
-			{
-				GadgetListBoxSetSelected(s_listbox, i);
-				break;
-			}
+			if (s_liveGameIds[i] != previouslySelected)
+				continue;
+
+			// Same lobby, different match: that row is a different game and not the one the
+			// player had selected. Fall back to the lobby alone for a row that has no match id
+			// (a GO list), which is the only id it has.
+			if (!previouslySelectedMatch.isEmpty() && s_liveGameMatchIds[i] != previouslySelectedMatch)
+				continue;
+
+			GadgetListBoxSetSelected(s_listbox, i);
+			break;
 		}
 	}
 }
@@ -448,18 +498,26 @@ static Bool liveGamesConnectSelected(void)
 	if (selected < 0 || selected >= (Int)s_liveGameIds.size())
 		return FALSE;
 
+	// Which match this row is, when the list named one. Every path below that can start a watch
+	// hands it on: a lobby can list the match that just ended beside the next one, and the relay
+	// picks the newest game that has not ended when it is not told which one is meant.
+	const AsciiString matchId = (selected < (Int)s_liveGameMatchIds.size())
+		? s_liveGameMatchIds[selected] : AsciiString::TheEmptyString;
+	const Bool isEnded = (selected < (Int)s_liveGameEnded.size()) && s_liveGameEnded[selected];
+
 	// A password-protected live stream asks for the password before the session is queued. The
-	// browser stays up behind the modal popup, exactly like custom games.
+	// browser stays up behind the modal popup, exactly like custom games. An ended match takes
+	// this path too - it is still watchable - and is never treated as a lobby to sit in.
 	if (selected < (Int)s_liveGameIsLive.size() && s_liveGameIsLive[selected] &&
 		selected < (Int)s_liveGamePassworded.size() && s_liveGamePassworded[selected])
 	{
 		const AsciiString& displayName = (selected < (Int)s_liveGameNames.size())
 			? s_liveGameNames[selected] : AsciiString::TheEmptyString;
-		liveWatchOpenPasswordPopup(s_liveGameIds[selected], displayName, TRUE);
+		liveWatchOpenPasswordPopup(s_liveGameIds[selected], displayName, TRUE, matchId);
 		return TRUE;
 	}
 
-	if (selected < (Int)s_liveGameIsLive.size() && !s_liveGameIsLive[selected])
+	if (!isEnded && selected < (Int)s_liveGameIsLive.size() && !s_liveGameIsLive[selected])
 	{
 		// Pre-game lobby, or a started game this viewer cannot join yet: open the read-only
 		// observer view as the waiting room. It subscribes to the pending-observer queue itself
@@ -478,12 +536,13 @@ static Bool liveGamesConnectSelected(void)
 		return TRUE;
 	}
 
-	// Hand over the lobby id alone: GO mints the single-use watch ticket and returns the relay
-	// URL that carries it. The row's delay pre-seeds the countdown and join timeout while GO
-	// holds the ticket behind the delay gate.
+	// Hand over the lobby id and the match: GO mints the single-use watch ticket and returns the
+	// relay URL that carries it; direct mode asks the relay for that one game. The row's delay
+	// pre-seeds the countdown and join timeout while GO holds the ticket behind the delay gate.
 	StartLiveObserverSession(s_liveGameIds[selected], AsciiString::TheEmptyString,
 		AsciiString::TheEmptyString,
-		(selected < (Int)s_liveGameDelaySeconds.size()) ? s_liveGameDelaySeconds[selected] : -1);
+		(selected < (Int)s_liveGameDelaySeconds.size()) ? s_liveGameDelaySeconds[selected] : -1,
+		matchId);
 	TheShell->pop();
 	return TRUE;
 }
@@ -577,7 +636,9 @@ void LiveGamesMenuShutdown(void)
 
 	s_liveTitleWindow = nullptr;
 	s_liveGameIds.clear();
+	s_liveGameMatchIds.clear();
 	s_liveGameIsLive.clear();
+	s_liveGameEnded.clear();
 	s_liveGamePassworded.clear();
 	s_liveGameNames.clear();
 	s_liveGameDelaySeconds.clear();

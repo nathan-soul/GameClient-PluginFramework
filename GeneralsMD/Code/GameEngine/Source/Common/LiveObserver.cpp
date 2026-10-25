@@ -293,6 +293,19 @@ Bool liveServicesParseLivestreams(const AsciiString& body, std::vector<LiveGameE
 			if (entry.lobbyId.isEmpty())
 				continue;
 
+			// The match, when the source knows one (direct mode only: GO describes a lobby, the
+			// relay describes a game). A lobby can list a finished match beside the next one, so
+			// this is what tells the two rows apart and what a watch names to get the game the
+			// player actually clicked. The relay prints it as a string; a number is accepted too
+			// rather than failing the whole list over the type of one field.
+			if (game.contains("match_id"))
+			{
+				if (game["match_id"].is_string())
+					entry.matchId = game["match_id"].get<std::string>().c_str();
+				else if (game["match_id"].is_number())
+					entry.matchId = game["match_id"].dump().c_str();
+			}
+
 			// map_name is a display name, not a path, so it needs no leaf/extension stripping.
 			// A game missing metadata is still watchable, so fall back rather than drop the row.
 			const std::string mapName = game.value("map_name", std::string(""));
@@ -334,12 +347,18 @@ Bool liveServicesParseLivestreams(const AsciiString& body, std::vector<LiveGameE
 			entry.state = (game.contains("state") && game["state"].is_number_integer())
 				? game["state"].get<Int>() : 1;
 			entry.passworded = game.value("passworded", false) ? TRUE : FALSE;
+			// Direct mode's third phase: the match is over and the relay is still serving it.
+			// Still watchable, so it joins like a live row and never like a pre-game lobby - the
+			// game it names has no lobby left to sit in.
+			entry.ended = game.value("ended", false) ? TRUE : FALSE;
 			entry.pendingObserverCount = game.value("pending_observer_count", 0);
 
 			// watch_action is GO's per-viewer directive (0 observe / 1 wait / 2 join). Absent on
-			// older GO, derive it from the state: live rows join, pre-game rows observe.
+			// older GO, derive it from the state: live rows join, pre-game rows observe. An ended
+			// row joins (it is watchable), which is why it is tested before the state.
 			entry.watchAction = (game.contains("watch_action") && game["watch_action"].is_number_integer())
-				? game["watch_action"].get<Int>() : (entry.state == 1 ? 2 : 0);
+				? game["watch_action"].get<Int>()
+				: ((entry.ended || entry.state == 1) ? 2 : 0);
 			entry.delayRemainingSeconds = (game.contains("delay_remaining_seconds") &&
 				game["delay_remaining_seconds"].is_number_integer())
 				? game["delay_remaining_seconds"].get<Int>() : 0;
@@ -1238,7 +1257,7 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 
 		// close() joins this thread, so the retry window must stop as soon as the session is
 		// cancelled - otherwise leaving a watch blocks on the relay for the whole window.
-		transport->RequestWatchSession(m_gameId.str(), m_password,
+		transport->RequestWatchSession(m_gameId.str(), m_password, m_matchId.str(),
 			[&](const GencastWatchSession& session)
 			{
 				ok = session.success;
@@ -1435,7 +1454,7 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 }
 
 void LiveObserver::connect(const AsciiString& lobbyId, const std::string& password,
-	Int expectedDelaySeconds)
+	Int expectedDelaySeconds, const AsciiString& matchId)
 {
 	m_shouldRun.store(true);
 	m_password = password;
@@ -1443,8 +1462,11 @@ void LiveObserver::connect(const AsciiString& lobbyId, const std::string& passwo
 	m_expectedDelaySeconds = expectedDelaySeconds;
 	m_joinStartedAtMs = timeGetTime();
 
-	// The lobby id is all this needs: admission runs through GO, which mints a single-use ticket
-	// for this player and answers with the complete relay URL (see fetchWatchTicket).
+	// The lobby id is all this needs for admission through GO, which mints a single-use ticket
+	// for this player and answers with the complete relay URL (see fetchWatchTicket). In direct
+	// mode the relay is the grantor and the lobby can hold more than one watchable game, so the
+	// match id travels with it: without one the relay has to guess which game is meant.
+	m_matchId = matchId;
 	m_gameId = lobbyId.isEmpty() ? AsciiString("unknown") : lobbyId;
 	if (lobbyId.isEmpty())
 	{

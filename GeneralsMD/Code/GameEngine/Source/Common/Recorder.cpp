@@ -28,6 +28,7 @@
 #include "Common/ReplayStreamSink.h"
 #include "Common/LiveStreamer.h"
 #include "Common/LiveObserver.h"
+#include "Common/GencastTransport.h"	// the relay's match-end report (direct mode only)
 #include "Common/file.h"
 #include "Common/FileSystem.h"
 #include "Common/PlayerList.h"
@@ -909,6 +910,20 @@ void RecorderClass::stopRecording() {
 	m_fileName.clear();
 
 #if defined(GENERALS_ONLINE)
+	// The match is over. If this client was the one streaming it, the relay has to hear that
+	// too: without it the watch entry keeps reading "live" until the TTL reaps it, and the
+	// post-game hold - an hour in which the game is still watchable from the beginning - never
+	// starts. The relay decides; a client that was not that game's announcer gets a 200 no-op.
+	//
+	// Gated on the streamer and not on the game: every match is recorded by both players, but
+	// only the one uploading a live stream announced one. Direct mode only - inside it,
+	// GencastEndCurrentMatch resolves lobby, match and player id and sends from a worker, so
+	// this teardown is not held for the relay's timeout.
+	if (TheLiveStreamer != nullptr && TheLiveStreamer->isStreaming())
+	{
+		GencastEndCurrentMatch("match-over");
+	}
+
 	// Live streaming - shut down the streamer when recording stops
 	if (TheLiveStreamer)
 	{

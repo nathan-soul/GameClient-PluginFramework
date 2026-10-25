@@ -295,8 +295,13 @@ extern WindowMsgHandledType PopupJoinGameInput( GameWindow *window, UnsignedInt 
 // only an accepted one queues the observer session, and bPopShellOnSubmit then pops the shell so
 // the screen below takes over the pending-session pump. A rejected one leaves every screen where
 // it is and puts this popup back up.
+//
+// matchId names which match of that lobby the viewer clicked - direct mode lists every match of a
+// lobby, including one that has already finished - and rides along to both the check and the
+// session, so the watch lands on the game that was picked and not whichever one the relay would
+// consider newest. Empty for a caller that has no ids.
 extern void liveWatchOpenPasswordPopup( const AsciiString& lobbyId, const AsciiString& displayName,
-	Bool bPopShellOnSubmit );
+	Bool bPopShellOnSubmit, const AsciiString& matchId );
 
 // Same popup for a pre-game lobby: on submit the password is checked and, only once the relay
 // accepts it, the read-only lobby view opens carrying the password.

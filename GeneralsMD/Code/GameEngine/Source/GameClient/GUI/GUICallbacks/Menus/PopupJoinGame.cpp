@@ -94,15 +94,19 @@ static Bool s_watchLiveObserveMode = FALSE;
 static Bool s_watchLivePopShellOnSubmit = FALSE;
 static AsciiString s_watchLiveLobbyId;
 static AsciiString s_watchLiveDisplayName;
+// Which match of that lobby (direct mode). Kept beside the password because both have to reach
+// the same join: the check and the session are the same POST /direct/join.
+static AsciiString s_watchLiveMatchId;
 
 void liveWatchOpenPasswordPopup(const AsciiString& lobbyId, const AsciiString& displayName,
-	Bool bPopShellOnSubmit)
+	Bool bPopShellOnSubmit, const AsciiString& matchId)
 {
 	s_watchLiveMode = TRUE;
 	s_watchLiveObserveMode = FALSE;
 	s_watchLivePopShellOnSubmit = bPopShellOnSubmit;
 	s_watchLiveLobbyId = lobbyId;
 	s_watchLiveDisplayName = displayName;
+	s_watchLiveMatchId = matchId;
 
 	GameSpyOpenOverlay(GSOVERLAY_GAMEPASSWORD);
 }
@@ -114,6 +118,9 @@ void liveWatchOpenObservePasswordPopup(const AsciiString& lobbyId, const AsciiSt
 	s_watchLivePopShellOnSubmit = FALSE;
 	s_watchLiveLobbyId = lobbyId;
 	s_watchLiveDisplayName = displayName;
+	// The pre-game view resolves its own watch later, through the lobby's LEAVE/HANDOFF path, so
+	// it names the lobby only; there is no match to carry yet.
+	s_watchLiveMatchId.clear();
 
 	GameSpyOpenOverlay(GSOVERLAY_GAMEPASSWORD);
 }
@@ -338,6 +345,8 @@ static Bool s_watchPasswordRetryObserve = FALSE;
 static Bool s_watchPasswordRetryPopShell = FALSE;
 static AsciiString s_watchPasswordRetryLobbyId;
 static AsciiString s_watchPasswordRetryDisplayName;
+// The match the rejected password was tried against, so the retry asks the same question.
+static AsciiString s_watchPasswordRetryMatchId;
 
 static void onWatchPasswordRetryOk()
 {
@@ -347,11 +356,12 @@ static void onWatchPasswordRetryOk()
 		liveWatchOpenObservePasswordPopup(s_watchPasswordRetryLobbyId, s_watchPasswordRetryDisplayName);
 	else
 		liveWatchOpenPasswordPopup(s_watchPasswordRetryLobbyId, s_watchPasswordRetryDisplayName,
-			s_watchPasswordRetryPopShell);
+			s_watchPasswordRetryPopShell, s_watchPasswordRetryMatchId);
 
 	// The popup owns its copy of these from here on.
 	s_watchPasswordRetryLobbyId.clear();
 	s_watchPasswordRetryDisplayName.clear();
+	s_watchPasswordRetryMatchId.clear();
 	s_watchPasswordRetryObserve = FALSE;
 	s_watchPasswordRetryPopShell = FALSE;
 }
@@ -363,12 +373,14 @@ static void onWatchPasswordRetryOk()
 // so it says why and leaves the screen alone rather than asking again.
 //-----------------------------------------------------------------------------
 static void reportWatchPasswordFailure(WatchPasswordVerdict verdict, const AsciiString& lobbyId,
-	const AsciiString& displayName, Bool bObserveMode, Bool bPopShellOnSubmit)
+	const AsciiString& displayName, Bool bObserveMode, Bool bPopShellOnSubmit,
+	const AsciiString& matchId)
 {
 	if (verdict == WatchPasswordVerdict::WrongPassword)
 	{
 		s_watchPasswordRetryLobbyId = lobbyId;
 		s_watchPasswordRetryDisplayName = displayName;
+		s_watchPasswordRetryMatchId = matchId;
 		s_watchPasswordRetryObserve = bObserveMode;
 		s_watchPasswordRetryPopShell = bPopShellOnSubmit;
 
@@ -414,6 +426,7 @@ static void joinGame( AsciiString password )
 		// change what is on screen.
 		const AsciiString lobbyId = s_watchLiveLobbyId;
 		const AsciiString displayName = s_watchLiveDisplayName;
+		const AsciiString matchId = s_watchLiveMatchId;
 		const Bool bPopShellOnSubmit = s_watchLivePopShellOnSubmit;
 		const Bool bObserveMode = s_watchLiveObserveMode;
 
@@ -422,6 +435,7 @@ static void joinGame( AsciiString password )
 		s_watchLivePopShellOnSubmit = FALSE;
 		s_watchLiveLobbyId.clear();
 		s_watchLiveDisplayName.clear();
+		s_watchLiveMatchId.clear();
 
 		GameSpyCloseOverlay(GSOVERLAY_GAMEPASSWORD);
 		parentPopup = nullptr;
@@ -433,8 +447,8 @@ static void joinGame( AsciiString password )
 			// put the watcher in a lobby they had never been admitted to, for any password at
 			// all. It is pushed only once the relay has answered, and pushed from here so the
 			// password keeps riding along to the stream-live handoff.
-			liveWatchValidatePassword(lobbyId, password,
-				[lobbyId, password, displayName](WatchPasswordVerdict verdict)
+			liveWatchValidatePassword(lobbyId, password, matchId,
+				[lobbyId, password, displayName, matchId](WatchPasswordVerdict verdict)
 				{
 					// AcceptedNotLive is the normal pre-game answer: the relay tests the
 					// password before it tests whether a stream exists.
@@ -447,7 +461,7 @@ static void joinGame( AsciiString password )
 						return;
 					}
 
-					reportWatchPasswordFailure(verdict, lobbyId, displayName, TRUE, FALSE);
+					reportWatchPasswordFailure(verdict, lobbyId, displayName, TRUE, FALSE, matchId);
 				});
 			return;
 		}
@@ -455,21 +469,22 @@ static void joinGame( AsciiString password )
 		// Live stream: the password is checked before the session is queued and before the shell
 		// pops. Popping first is what sent a wrong password to the main menu, with the error on a
 		// screen the player was no longer looking at.
-		liveWatchValidatePassword(lobbyId, password,
-			[lobbyId, password, displayName, bPopShellOnSubmit](WatchPasswordVerdict verdict)
+		liveWatchValidatePassword(lobbyId, password, matchId,
+			[lobbyId, password, displayName, matchId, bPopShellOnSubmit](WatchPasswordVerdict verdict)
 			{
 				// A live row is expected to answer 200; 404 here is a stream that ended between
 				// the list refresh and the submit, which starting a session would only wait out.
 				if (verdict == WatchPasswordVerdict::Accepted ||
 					verdict == WatchPasswordVerdict::Unchecked)
 				{
-					StartLiveObserverSession(lobbyId, password, displayName);
+					StartLiveObserverSession(lobbyId, password, displayName, -1, matchId);
 					if (bPopShellOnSubmit)
 						TheShell->pop();
 					return;
 				}
 
-				reportWatchPasswordFailure(verdict, lobbyId, displayName, FALSE, bPopShellOnSubmit);
+				reportWatchPasswordFailure(verdict, lobbyId, displayName, FALSE, bPopShellOnSubmit,
+					matchId);
 			});
 		return;
 	}
