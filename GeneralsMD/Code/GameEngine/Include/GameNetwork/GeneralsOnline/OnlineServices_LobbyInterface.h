@@ -15,6 +15,11 @@ extern NGMPGame* TheNGMPGame;
 
 struct LobbyMemberEntry : public NetworkMemberBase
 {
+	// A member the lobby has not seated yet. 0xFFFF is the widest value a uint16_t can hold, so
+	// it never truncates into something that still looks like an index (999999 did: it is
+	// 16959 in 16 bits, which the game then reported as a bad slot on every roster update) and
+	// it can never collide with a real slot, because MAX_SLOTS is far below it.
+	static constexpr uint16_t SLOT_INDEX_NONE = 0xFFFF;
 
 	uint16_t preferredPort;
 	// NOTE: NetworkMemberBase is not deserialized
@@ -25,7 +30,7 @@ struct LobbyMemberEntry : public NetworkMemberBase
 	int startpos = -1;
 	bool has_map = false;
 
-	uint16_t m_SlotIndex = 999999;
+	uint16_t m_SlotIndex = SLOT_INDEX_NONE;
 	uint16_t m_SlotState = SlotState::SLOT_OPEN;
 
 	std::string region;
@@ -37,6 +42,11 @@ struct LobbyMemberEntry : public NetworkMemberBase
 		return user_id != -1 && m_SlotState == SlotState::SLOT_PLAYER;
 	}
 };
+
+// Guarded here rather than inside the struct so the check runs on a complete type: a sentinel
+// that ever became a legal slot index would silently seat a player in someone else's seat.
+static_assert(LobbyMemberEntry::SLOT_INDEX_NONE >= MAX_SLOTS,
+	"the unseated marker must never be a valid slot index");
 
 enum class ELobbyType
 {

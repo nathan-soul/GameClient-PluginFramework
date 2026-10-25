@@ -7,6 +7,8 @@
 
 #include "GameNetwork/GeneralsOnline/GeneralsOnline_Settings.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
+// The announce carries the lobby roster, so the transport reads the lobby the player is in.
+#include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
 
 #include <curl/curl.h>
@@ -155,6 +157,68 @@ namespace
 		return socketBase + path;
 	}
 
+	/// The relay's slot state is a name, not the engine's enum ordinal: the enum's numbering is
+	/// a client implementation detail, while this string ends up in the watch list.
+	const char* SlotStateName(SlotState state)
+	{
+		switch (state)
+		{
+		case SLOT_OPEN: return "open";
+		case SLOT_CLOSED: return "closed";
+		case SLOT_EASY_AI: return "easy_ai";
+		case SLOT_MED_AI: return "medium_ai";
+		case SLOT_BRUTAL_AI: return "brutal_ai";
+		case SLOT_PLAYER: return "player";
+		}
+
+		return "open";
+	}
+
+	bool IsAiSlotState(SlotState state)
+	{
+		return state == SLOT_EASY_AI || state == SLOT_MED_AI || state == SLOT_BRUTAL_AI;
+	}
+
+	/// The roster as the lobby currently shows it.
+	///
+	/// Unseated members (SLOT_INDEX_NONE) are left out: they have no seat to report, and their
+	/// marker is not a slot index. Members the host has not assigned yet keep whatever state
+	/// they carry (open/closed), so a viewer sees the same board the players do.
+	nlohmann::json SlotsFromCurrentLobby()
+	{
+		nlohmann::json slots = nlohmann::json::array();
+
+		NGMP_OnlineServices_LobbyInterface* lobby =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+		if (lobby == nullptr)
+		{
+			return slots;
+		}
+
+		for (const LobbyMemberEntry& member : lobby->GetCurrentLobby().members)
+		{
+			if (member.m_SlotIndex == LobbyMemberEntry::SLOT_INDEX_NONE)
+			{
+				continue;
+			}
+
+			const SlotState state = static_cast<SlotState>(member.m_SlotState);
+
+			nlohmann::json slot;
+			slot["slot_index"] = member.m_SlotIndex;
+			slot["state"] = SlotStateName(state);
+			slot["team"] = member.team;
+			slot["color"] = member.color;
+			slot["startpos"] = member.startpos;
+			slot["display_name"] = member.display_name;
+			slot["is_ai"] = IsAiSlotState(state);
+			slots.push_back(slot);
+		}
+
+		return slots;
+	}
+
 	class RelayGencastTransport : public GencastTransport
 	{
 	public:
@@ -170,12 +234,13 @@ namespace
 
 		bool IsAvailable() const override { return !BaseUrl().empty(); }
 
-		void SetAnnounceContext(long playerId, const std::string& mapName,
-			const std::string& playersCsv) override
+		void SetAnnounceContext(long playerId, long userId, const std::string& displayName,
+			const std::string& mapName) override
 		{
 			m_playerId = playerId;
+			m_userId = userId;
+			m_displayName = displayName;
 			m_mapName = mapName;
-			m_playersCsv = playersCsv;
 		}
 
 		void FetchWatchList(GencastWatchListCallback done) override
@@ -324,44 +389,23 @@ namespace
 		{
 			GencastStreamRegistration registration;
 
-			nlohmann::json players = nlohmann::json::array();
-
-			if (!m_playersCsv.empty())
-			{
-				size_t start = 0;
-
-				while (start <= m_playersCsv.size())
-				{
-					const size_t comma = m_playersCsv.find(',', start);
-
-					std::string name = m_playersCsv.substr(start,
-						comma == std::string::npos ? std::string::npos : comma - start);
-
-					while (!name.empty() && name[0] == ' ')
-					{
-						name.erase(0, 1);
-					}
-
-					if (!name.empty())
-					{
-						players.push_back(name);
-					}
-
-					if (comma == std::string::npos)
-					{
-						break;
-					}
-
-					start = comma + 1;
-				}
-			}
-
 			nlohmann::json request;
 			request["lobby_id"] = lobbyId;
 			request["player_id"] = m_playerId;
+
+			// The relay keys its player record on the Services user id and only falls back to
+			// the wire player id, so an unknown id is left out rather than sent as -1.
+			if (m_userId > 0)
+			{
+				request["user_id"] = m_userId;
+			}
+
+			request["display_name"] = m_displayName;
 			request["map_name"] = m_mapName;
-			request["players"] = players;
-			request["slots"] = nlohmann::json::array();
+			// The roster now travels in slots; players is kept as an empty array because the
+			// relay still carries the field, and nothing else fills it any more.
+			request["players"] = nlohmann::json::array();
+			request["slots"] = SlotsFromCurrentLobby();
 			// The streamer registers when the match starts (LiveStreamer::registerForGame), not
 			// while sitting in the lobby, so the relay's entry is live from its first breath.
 			request["state"] = "live";
@@ -456,8 +500,11 @@ namespace
 
 	private:
 		long m_playerId = 0;
+		// The Services user id, or <= 0 when the client is not signed in. The relay keys its
+		// player record on this one and falls back to m_playerId for older clients.
+		long m_userId = 0;
+		std::string m_displayName;
 		std::string m_mapName;
-		std::string m_playersCsv;
 	};
 }
 

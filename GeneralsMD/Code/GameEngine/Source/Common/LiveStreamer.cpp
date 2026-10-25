@@ -877,9 +877,14 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 		// index is 0-based (the host is index 0). Sending the index unchanged means the most
 		// common streamer - the host - is refused with 400 and never announces at all.
 		long playerId = 0;
+		std::string displayName;
+
 		if (ThePlayerList != nullptr && ThePlayerList->getLocalPlayer() != nullptr)
 		{
-			playerId = (long)ThePlayerList->getLocalPlayer()->getPlayerIndex() + 1;
+			Player* localPlayer = ThePlayerList->getLocalPlayer();
+			playerId = (long)localPlayer->getPlayerIndex() + 1;
+			// The relay stores this name with the player record and shows it in its logs.
+			displayName = wideToUtf8(localPlayer->getPlayerDisplayName());
 		}
 
 		if (playerId <= 0)
@@ -892,9 +897,20 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 			return false;
 		}
 
+		// The wire slot is only an alias: the relay prefers the Services user id, and 0 means
+		// "not signed in" so the announce falls back to the slot id.
+		long userId = 0;
+		NGMP_OnlineServices_AuthInterface* auth =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+
+		if (auth != nullptr)
+		{
+			userId = (long)auth->GetUserID();
+		}
+
 		const char* mapName = TheGlobalData != nullptr ? TheGlobalData->m_mapName.str() : "";
 
-		transport->SetAnnounceContext(playerId, mapName, std::string());
+		transport->SetAnnounceContext(playerId, userId, displayName, mapName);
 
 		std::string streamUrl;
 		bool ok = false;

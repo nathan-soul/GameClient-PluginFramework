@@ -169,7 +169,7 @@ void NGMPGame::UpdateSlotsFromCurrentLobby()
 		{
 			bool bIsAI = (pLobbyMember.m_SlotState == SlotState::SLOT_EASY_AI || pLobbyMember.m_SlotState == SlotState::SLOT_MED_AI|| pLobbyMember.m_SlotState == SlotState::SLOT_BRUTAL_AI);
 
-			if (pLobbyMember.m_SlotIndex >= MAX_SLOTS)
+			if (pLobbyMember.m_SlotIndex == LobbyMemberEntry::SLOT_INDEX_NONE || pLobbyMember.m_SlotIndex >= MAX_SLOTS)
 			{
 				NetworkLog(ELogVerbosity::LOG_RELEASE, "[NGMP] UpdateSlotsFromCurrentLobby: bad slot index %u for user %lld, skipping", pLobbyMember.m_SlotIndex, pLobbyMember.user_id);
 				continue;
@@ -219,7 +219,7 @@ void NGMPGame::UpdateSlotsFromCurrentLobby()
 		else
 		{
 			// handle open/closed
-			if (pLobbyMember.m_SlotIndex >= MAX_SLOTS)
+			if (pLobbyMember.m_SlotIndex == LobbyMemberEntry::SLOT_INDEX_NONE || pLobbyMember.m_SlotIndex >= MAX_SLOTS)
 			{
 				NetworkLog(ELogVerbosity::LOG_RELEASE, "[NGMP] UpdateSlotsFromCurrentLobby: bad slot index %u for user %lld, skipping", pLobbyMember.m_SlotIndex, pLobbyMember.user_id);
 				continue;

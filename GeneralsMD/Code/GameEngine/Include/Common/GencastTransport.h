@@ -124,10 +124,15 @@ public:
 	virtual void RegisterStream(const std::string& lobbyId, GencastRegisterCallback done) = 0;
 
 	// Direct mode has to tell the relay who is announcing and what the lobby looks like: the
-	// relay binds that player's password to the lobby on the first announce. Services mode
-	// ignores all of it, because Services already knows who you are.
-	virtual void SetAnnounceContext(long playerId, const std::string& mapName,
-		const std::string& playersCsv) {}
+	// relay binds that player's password to the lobby on the first announce, keyed by the
+	// Services user id. Services mode ignores all of it, because Services already knows who
+	// you are.
+	//
+	// playerId is the wire slot id (1-based) and stays the fallback identity; userId is the GO
+	// Services id the relay prefers, and <= 0 means "not signed in". displayName and mapName
+	// are display data only.
+	virtual void SetAnnounceContext(long playerId, long userId, const std::string& displayName,
+		const std::string& mapName) {}
 
 	virtual void SubscribeLobbyUpdates(const std::string& lobbyId) = 0;
 	virtual void UnsubscribeLobbyUpdates() = 0;
