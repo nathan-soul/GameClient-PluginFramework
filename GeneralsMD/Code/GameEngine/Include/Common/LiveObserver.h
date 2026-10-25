@@ -630,7 +630,7 @@ Bool liveServicesRequest(const AsciiString& url, Bool bPost, const char* szPostB
 // every change to the instrumentation. Shared by LiveObserver.cpp and LiveStreamer.cpp, which must
 // therefore include this header - that is also what resolves LIVE_OBSERVER_LOGGING above, without
 // which logging silently stays off in a DEFAULT build.
-#define LIVE_OBSERVER_BUILD_TAG "2026-10-25-gencast-direct-log"
+#define LIVE_OBSERVER_BUILD_TAG "2026-10-25-gencast-chatdiag"
 
 void liveObserverLog(const char* fmt, ...);
 void liveObserverInitLog(const char* lobbyId);

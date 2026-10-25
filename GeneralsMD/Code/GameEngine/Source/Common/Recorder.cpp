@@ -812,8 +812,20 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 		{
 			// From now on the streamer receives raw header/body/patch bytes.
 			m_streamSink = streamer;
+			// CHATDIAG: the sink exists from here until stopRecording. No sink means every chat
+			// line is dropped silently in Recorder::onChatMessage.
+			liveStreamLog("CHATDIAG streamSink ATTACH reason=startRecording(lobby registration pending) "
+				"lobbyId=%s streamer=%p\n", streamer->getLobbyId().str(), (void*)streamer);
 			DEBUG_LOG(("RecorderClass::startRecording() - Live stream registered, lobbyId=%s",
 				streamer->getLobbyId().str()));
+		}
+		else
+		{
+			// CHATDIAG: why there is no sink for this game. The streamer logs its own reason when
+			// logging is on; this line also covers a build where m_liveStreamEnabled is off.
+			liveStreamLog("CHATDIAG streamSink NOT_ATTACHED reason=liveStreamStartPendingSession returned null "
+				"(no pending lobby registration, or liveStreamEnabled=%d)\n",
+				(int)(TheGlobalData != nullptr && TheGlobalData->m_liveStreamEnabled));
 		}
 	}
 	catch (...)
@@ -821,6 +833,7 @@ void RecorderClass::startRecording(GameDifficulty diff, Int originalGameMode, In
 		// Live streamer init failed - game continues without streaming
 		DEBUG_LOG(("RecorderClass::startRecording() - Live streamer init failed, continuing without streaming"));
 		liveStreamLog("RecorderClass::startRecording() - Live streamer init EXCEPTION, continuing without streaming\n");
+		liveStreamLog("CHATDIAG streamSink NOT_ATTACHED reason=startRecording caught an exception\n");
 	}
 #endif
 
@@ -903,6 +916,14 @@ void RecorderClass::stopRecording() {
 		delete TheLiveStreamer;
 		TheLiveStreamer = nullptr;
 		m_streamSink = nullptr;
+		// CHATDIAG: no chat can be forwarded after this point in the session.
+		liveStreamLog("CHATDIAG streamSink DETACH reason=stopRecording(TheLiveStreamer closed and deleted)\n");
+	}
+	else if (m_streamSink)
+	{
+		// CHATDIAG: a sink with no streamer behind it - the pointer survives this teardown.
+		liveStreamLog("CHATDIAG streamSink STALE reason=stopRecording with TheLiveStreamer already null, "
+			"sink=%p left attached\n", (void*)m_streamSink);
 	}
 #endif
 }

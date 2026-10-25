@@ -59,6 +59,12 @@
 #include "../NetworkMesh.h"
 #include "../ngmp_interfaces.h"
 
+#if defined(GENERALS_ONLINE)
+// CHATDIAG: live-stream chat tracing. liveStreamLog lives in LiveStreamer.h; it resolves the
+// LIVE_OBSERVER_LOGGING gate from LiveObserver.h (see its comment) and is a no-op otherwise.
+#include "Common/LiveStreamer.h"
+#endif
+
 static Bool hasValidTransferFileExtension(const AsciiString& filePath)
 {
 	static const char* const validExtensions[] = {
@@ -815,6 +821,13 @@ void ConnectionManager::processChat(NetChatCommandMsg *msg)
 	const Player *player = ThePlayerList->findPlayerWithNameKey( TheNameKeyGenerator->nameToKey( playerName ) );
 	if (!player)
 	{
+#if defined(GENERALS_ONLINE)
+		// CHATDIAG: the sender's slot resolved to no player object, so the line never reaches a
+		// single gate below.
+		if (TheGlobalData != nullptr && TheGlobalData->m_liveStreamEnabled)
+			liveStreamLog("CHATDIAG processChat NO_PLAYER slot=%u mask=0x%08X localSlot=%d -> local display only\n",
+				(unsigned)playerID, (unsigned)msg->getPlayerMask(), m_localSlot);
+#endif
 		TheInGameUI->message(L"%ls", unitext.str());
 		return;
 	}
@@ -822,6 +835,22 @@ void ConnectionManager::processChat(NetChatCommandMsg *msg)
 	Bool fromObserver = !player->isPlayerActive();
 	Bool amIObserver = !ThePlayerList->getLocalPlayer()->isPlayerActive();
 	Bool canSeeChat = (amIObserver || !fromObserver) && !TheGameInfo->getConstSlot(playerID)->isMuted();
+
+#if defined(GENERALS_ONLINE)
+	// CHATDIAG: the values the forward guard reads, one line per chat message. `chatGlobal` is
+	// computed once here and reused by the guard, so the logged value is the deciding value.
+	const Bool chatMaskHit = (((1 << m_localSlot) & msg->getPlayerMask()) != 0);
+	const Bool chatGlobal = isGlobalChatMask(msg->getPlayerMask(), player);
+	if (TheGlobalData != nullptr && TheGlobalData->m_liveStreamEnabled)
+		liveStreamLog("CHATDIAG processChat slot=%u mask=0x%08X localSlot=%d maskHit=%d canSeeChat=%d "
+			"amIObserver=%d fromObserver=%d muted=%d global=%d recorder=%d sink=%d execFrame=%u\n",
+			(unsigned)playerID, (unsigned)msg->getPlayerMask(), m_localSlot,
+			(int)chatMaskHit, (int)canSeeChat, (int)amIObserver, (int)fromObserver,
+			(int)TheGameInfo->getConstSlot(playerID)->isMuted(), (int)chatGlobal,
+			(int)(TheRecorder != nullptr),
+			(int)(TheRecorder != nullptr && TheRecorder->getStreamSink() != nullptr),
+			(unsigned)msg->getExecutionFrame());
+#endif
 
 	if ( ((1<<m_localSlot) & msg->getPlayerMask() ) && canSeeChat  )
 	{
@@ -842,8 +871,15 @@ void ConnectionManager::processChat(NetChatCommandMsg *msg)
 		// The frame is the message's synchronized execution frame, not TheGameLogic->getFrame():
 		// the sender processes chat a frame or two ahead of the receivers, and every source's
 		// payload has to be byte-identical for the relay to dedupe the all-push copies.
-		if (TheRecorder && isGlobalChatMask(msg->getPlayerMask(), player))
+		if (TheRecorder && chatGlobal)
+		{
+			// CHATDIAG: the hook fired. Absent while the line above says global=1 means the
+			// sink swallowed it - see the same line's recorder=/sink= values and Recorder.h.
+			if (TheGlobalData != nullptr && TheGlobalData->m_liveStreamEnabled)
+				liveStreamLog("CHATDIAG onChatMessage CALLED frame=%u color=0x%08X\n",
+					(unsigned)msg->getExecutionFrame(), (unsigned)player->getPlayerColor());
 			TheRecorder->onChatMessage(msg->getExecutionFrame(), unitext, player->getPlayerColor());
+		}
 #endif
 	}
 }

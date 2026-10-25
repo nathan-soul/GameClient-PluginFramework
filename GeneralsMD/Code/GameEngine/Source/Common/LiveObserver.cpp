@@ -1614,12 +1614,18 @@ void LiveObserver::pollChatMessages(UnsignedInt curFrame)
 	const Bool interactive = TheGameLogic && TheGameLogic->isInInteractiveGame();
 	const Bool gateOpen = isSpectatorGateOpen(curFrame);
 	std::deque<ChatEntry> holdback;
+	// CHATDIAG: per-poll counters, reported once below.
+	Int displayed = 0;
+	Int dropped = 0;
+	UnsignedInt lastDisplayedFrame = 0;
 	for (auto& entry : batch)
 	{
 		if (entry.disaster)
 		{
 			// Stream-failure notice: the stream is gone, so there is nothing left to spoil.
 			displayChat(entry);
+			++displayed;
+			lastDisplayedFrame = entry.frame;
 		}
 		else if (entry.spectator)
 		{
@@ -1632,13 +1638,26 @@ void LiveObserver::pollChatMessages(UnsignedInt curFrame)
 			else if (m_spectatorChatMode == SPECTATOR_CHAT_AUTO)
 				showSpectator = interactive && gateOpen;
 			if (showSpectator)
+			{
 				displayChat(entry);
+				++displayed;
+				lastDisplayedFrame = entry.frame;
+			}
+			else
+			{
+				// CHATDIAG: the only path here that discards a line outright.
+				++dropped;
+				liveObserverLog("CHATDIAG poll DROP spectator cur=%u mode=%d interactive=%d gateOpen=%d\n",
+					curFrame, (int)m_spectatorChatMode, (int)interactive, (int)gateOpen);
+			}
 		}
 		else if (interactive && entry.frame <= curFrame)
 		{
 			// Player chat is frame-gated: released exactly when the observed game reaches the
 			// moment the streamer sent it, so it sits behind the same broadcast delay.
 			displayChat(entry);
+			++displayed;
+			lastDisplayedFrame = entry.frame;
 		}
 		else
 		{
@@ -1650,6 +1669,43 @@ void LiveObserver::pollChatMessages(UnsignedInt curFrame)
 		std::lock_guard<std::mutex> lock(m_chatMutex);
 		// Reinsert at the FRONT: these are the oldest entries and must drain in order.
 		m_chatQueue.insert(m_chatQueue.begin(), holdback.begin(), holdback.end());
+	}
+
+	// CHATDIAG: what this poll decided. A held player line is retried every logic frame, so the
+	// line repeats only when the verdict changes or once a second - enough to see curFrame
+	// walking up to heldOldestFrame, or stopping short of it for good. Polls with nothing to
+	// decide print nothing, so an idle session stays quiet.
+	{
+		static UnsignedInt s_chatDiagKey = 0xFFFFFFFFu;
+		static DWORD s_chatDiagMs = 0;
+		if (batch.empty())
+		{
+			// Nothing decided this poll; let the next one with entries log immediately.
+			s_chatDiagKey = 0xFFFFFFFFu;
+		}
+		else
+		{
+			const DWORD nowMs = timeGetTime();
+			const UnsignedInt key = (UnsignedInt)(batch.size() * 1000003u + holdback.size() * 7919u
+				+ (UnsignedInt)displayed * 31u + (UnsignedInt)dropped * 17u + (interactive ? 1u : 0u));
+			if (key != s_chatDiagKey || (DWORD)(nowMs - s_chatDiagMs) >= 1000u)
+			{
+				Int depth = 0;
+				{
+					std::lock_guard<std::mutex> lock(m_chatMutex);
+					depth = (int)m_chatQueue.size();
+				}
+				liveObserverLog("CHATDIAG poll cur=%u edge=%u interactive=%d gateOpen=%d batch=%d "
+					"displayed=%d lastDisplayedFrame=%u dropped=%d held=%d heldOldestFrame=%u "
+					"heldNewestFrame=%u depth=%d\n",
+					curFrame, getLiveEdge(), (int)interactive, (int)gateOpen, (int)batch.size(),
+					displayed, lastDisplayedFrame, dropped, (int)holdback.size(),
+					holdback.empty() ? 0u : holdback.front().frame,
+					holdback.empty() ? 0u : holdback.back().frame, depth);
+				s_chatDiagKey = key;
+				s_chatDiagMs = nowMs;
+			}
+		}
 	}
 }
 
@@ -1917,16 +1973,25 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
 
 	case 7: // LIVE_MSG_CHAT - player chat, frame-stamped by the streamer
 	{
+		// CHATDIAG: the watcher end of the chain. One line per CHAT frame received, plus one when
+		// a frame is refused, so a missing display can be traced to a missing frame.
 		// [frame u32 LE][textLen u32 LE][UTF-8 text][color u32 LE]
 		if (len < 12)
+		{
+			liveObserverLog("CHATDIAG chat recv len=%d SHORT(<12) -> dropped\n", (int)len);
 			break;
+		}
 		const unsigned char* p = (const unsigned char*)payload;
 		unsigned int frame = (unsigned int)p[0]
 			| ((unsigned int)p[1] << 8) | ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
 		unsigned int textLen = (unsigned int)p[4]
 			| ((unsigned int)p[5] << 8) | ((unsigned int)p[6] << 16) | ((unsigned int)p[7] << 24);
 		if ((uint64_t)len < 12ull + textLen)
+		{
+			liveObserverLog("CHATDIAG chat recv len=%d textLen=%u TRUNCATED -> dropped\n",
+				(int)len, textLen);
 			break;
+		}
 		unsigned int colorArgb = (unsigned int)p[8 + textLen]
 			| ((unsigned int)p[9 + textLen] << 8)
 			| ((unsigned int)p[10 + textLen] << 16)
@@ -1937,11 +2002,21 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
 		entry.colorArgb = colorArgb;
 		entry.spectator = FALSE;
 		entry.text = chatUtf8ToWide(std::string(payload + 8, textLen));
+		Bool queued = FALSE;
+		int depth = 0;
 		{
 			std::lock_guard<std::mutex> lock(m_chatMutex);
 			if (m_chatQueue.size() < 1000)
+			{
 				m_chatQueue.push_back(entry);
+				queued = TRUE;
+			}
+			depth = (int)m_chatQueue.size();
 		}
+		// CHATDIAG: queued=0 is the 1000-entry cap swallowing the line; depth shows the backlog
+		// that pollChatMessages is holding.
+		liveObserverLog("CHATDIAG chat recv frame=%u textLen=%u len=%d queued=%d depth=%d\n",
+			frame, textLen, (int)len, (int)queued, depth);
 		break;
 	}
 

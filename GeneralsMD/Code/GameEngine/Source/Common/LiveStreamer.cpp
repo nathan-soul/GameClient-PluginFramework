@@ -603,6 +603,14 @@ void LiveStreamer::onChat(UnsignedInt frame, const UnicodeString& text, Unsigned
 	appendU32LE(payload, (unsigned int)utf8.size());
 	payload.insert(payload.end(), utf8.begin(), utf8.end());
 	appendU32LE(payload, colorArgb);
+
+	// CHATDIAG: onChat reached on the streaming side, logged BEFORE queueFrame so a frame the
+	// queue then refuses is still visible here. backup=1 means this client is not the source the
+	// relay treats as canonical for the match.
+	liveStreamLog("CHATDIAG onChat frame=%u textLen=%u bytes=%u color=0x%08X backup=%d connected=%d\n",
+		frame, (unsigned int)utf8.size(), (unsigned int)payload.size(), colorArgb,
+		(int)m_isBackup.load(), (int)m_connected.load());
+
 	queueFrame(LIVE_MSG_CHAT, payload.data(), payload.size());
 }
 
