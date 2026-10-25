@@ -75,29 +75,17 @@ float GenOnlineSettings::DetermineCameraMaxHeight()
 
 std::string GenOnlineSettings::GetAnticheatPlugin() const
 {
-    // if empty, default to whatever official plugin is available
+    // An empty setting means "run without an anticheat plugin". Upstream settled on the same
+    // rule in 1efd12e92 ("skip anticheat plugin load when unconfigured"), and the overlay
+    // builds prove the live service accepts a client that reports no anticheat identity.
+    // The fallback that used to live here did the opposite: it silently forced EAC on any
+    // install that happened to ship easyanticheat.dll, and EAC cannot initialise in our
+    // environment (its DllMain hangs, see 59a1dee7e), so the client ended up advertising an
+    // anticheat it could not run.
     if (m_Plugins_Anticheat.empty())
     {
-        NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] AntiCheat name was empty, doing fallback flow");
-        std::string pluginPath1 = "plugins/easyanticheat/easyanticheat.dll";
-        std::string pluginPath2 = "plugins/goanticheat/goanticheat.dll";
-
-        // prefer EAC
-        NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] Fallback flow: Testing EAC");
-        if (std::filesystem::exists(pluginPath1.c_str()))
-        {
-            NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] Fallback flow: EAC Found.");
-            return std::string("easyanticheat");
-        }
-
-        NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] Fallback flow: Testing GOAC");
-        if (std::filesystem::exists(pluginPath2.c_str()))
-        {
-            NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] Fallback flow: GOAC Found.");
-            return std::string("goanticheat");
-        }
-
-        NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] Fallback failed.");
+        NetworkLog(ELogVerbosity::LOG_RELEASE, "[AC] No anticheat plugin configured, running without one");
+        return std::string();
     }
 
     return m_Plugins_Anticheat;
