@@ -354,6 +354,8 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 				return result;
 			}
 
+			result.httpStatus = (int)response.status;
+
 			// 401 is a real answer and must never be retried or reported as signed out.
 			if (response.status == 401)
 			{

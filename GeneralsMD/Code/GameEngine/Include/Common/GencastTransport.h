@@ -88,6 +88,10 @@ enum class EGencastAttempt
 struct GencastAttemptResult
 {
 	EGencastAttempt kind = EGencastAttempt::Failed;
+	// The server's own status, 0 when no answer arrived. The kind above is the policy-relevant
+	// part; the status is what lets a caller that only asks "would this password be accepted?"
+	// tell a dropped lobby (410) from a relay with direct watch switched off (403).
+	int httpStatus = 0;
 	std::string sessionId;
 	std::string wsUrl;
 	std::string sessionUrl;

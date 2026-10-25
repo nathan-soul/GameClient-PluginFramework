@@ -56,6 +56,7 @@
 #include "Common/NameKeyGenerator.h"
 #include "GameClient/WindowLayout.h"
 #include "GameClient/Gadget.h"
+#include "GameClient/GameText.h"
 #include "GameClient/KeyDefs.h"
 #include "GameClient/GadgetTextEntry.h"
 #include "GameClient/GadgetStaticText.h"
@@ -85,7 +86,9 @@ static void joinGame( AsciiString password );
 
 // Watch-live mode: this popup doubles as the password gate for a password-protected livestream,
 // where the "join" queues an observer session instead of joining the lobby. Observe mode is the
-// pre-game variant, which opens the read-only lobby view carrying the password.
+// pre-game variant, which opens the read-only lobby view. Neither path acts on the password the
+// popup collected - both hand it to the shared gate first (liveWatchValidatePassword), which is
+// the only thing that may open a screen.
 static Bool s_watchLiveMode = FALSE;
 static Bool s_watchLiveObserveMode = FALSE;
 static Bool s_watchLivePopShellOnSubmit = FALSE;
@@ -327,13 +330,88 @@ WindowMsgHandledType PopupJoinGameSystem( GameWindow *window, UnsignedInt msg, W
 // PRIVATE FUNCTIONS //////////////////////////////////////////////////////////
 //-----------------------------------------------------------------------------
 
+//-----------------------------------------------------------------------------
+// The message box's OK handler is a bare function pointer (GameWinMsgBoxFunc), so the retry
+// target has to live in file statics between raising the box and OK being pressed.
+//-----------------------------------------------------------------------------
+static Bool s_watchPasswordRetryObserve = FALSE;
+static Bool s_watchPasswordRetryPopShell = FALSE;
+static AsciiString s_watchPasswordRetryLobbyId;
+static AsciiString s_watchPasswordRetryDisplayName;
+
+static void onWatchPasswordRetryOk()
+{
+	// Same path, same flags: a wrong password on a live stream retries as a live stream, and the
+	// submit that follows pops the shell exactly as the first one would have.
+	if (s_watchPasswordRetryObserve)
+		liveWatchOpenObservePasswordPopup(s_watchPasswordRetryLobbyId, s_watchPasswordRetryDisplayName);
+	else
+		liveWatchOpenPasswordPopup(s_watchPasswordRetryLobbyId, s_watchPasswordRetryDisplayName,
+			s_watchPasswordRetryPopShell);
+
+	// The popup owns its copy of these from here on.
+	s_watchPasswordRetryLobbyId.clear();
+	s_watchPasswordRetryDisplayName.clear();
+	s_watchPasswordRetryObserve = FALSE;
+	s_watchPasswordRetryPopShell = FALSE;
+}
+
+//-----------------------------------------------------------------------------
+// One report for both watch paths: what a failed password check looks like. A wrong password is
+// the only verdict the player can do something about, so it puts the gate back up over the screen
+// they are already on. Every other refusal is the relay saying no for a reason no password fixes,
+// so it says why and leaves the screen alone rather than asking again.
+//-----------------------------------------------------------------------------
+static void reportWatchPasswordFailure(WatchPasswordVerdict verdict, const AsciiString& lobbyId,
+	const AsciiString& displayName, Bool bObserveMode, Bool bPopShellOnSubmit)
+{
+	if (verdict == WatchPasswordVerdict::WrongPassword)
+	{
+		s_watchPasswordRetryLobbyId = lobbyId;
+		s_watchPasswordRetryDisplayName = displayName;
+		s_watchPasswordRetryObserve = bObserveMode;
+		s_watchPasswordRetryPopShell = bPopShellOnSubmit;
+
+		// Same screen, same path: the live browser (or the main menu, when this is the re-prompt
+		// after a queued session was refused) is still where it was, so the only thing that
+		// changes is that the player can type again.
+		GSMessageBoxOk(TheGameText->fetch("GUI:JoinFailedDefault"),
+			TheGameText->fetch("GUI:JoinFailedBadPassword"), onWatchPasswordRetryOk);
+		return;
+	}
+
+	UnicodeString title(from_utf8(displayName.str()).c_str());
+	if (title.isEmpty())
+		title = TheGameText->fetch("GUI:JoinFailedDefault");
+
+	UnicodeString body;
+	switch (verdict)
+	{
+		case WatchPasswordVerdict::Gone:
+			body = UnicodeString(L"That lobby is no longer watchable.");
+			break;
+
+		case WatchPasswordVerdict::Unreachable:
+			body = UnicodeString(L"The relay did not answer. Nothing has changed - you can try again.");
+			break;
+
+		case WatchPasswordVerdict::Unwatchable:
+		default:
+			body = UnicodeString(L"The relay refused the watch session.");
+			break;
+	}
+
+	GSMessageBoxOk(title, body);
+}
+
 static void joinGame( AsciiString password )
 {
 	if (s_watchLiveMode)
 	{
-		// Snapshot before closing the overlay, which resets the mode statics. Popping the shell
-		// hands the pending session to the Welcome screen's pump; the pre-game lobby view stays
-		// up and pumps its own handoff, so it does not pop.
+		// Snapshot before closing the overlay, which resets the mode statics. Nothing is opened,
+		// popped or queued here: both paths hand the password to the shared gate first, and only
+		// its answer - which arrives on a later frame, on the screen the player is still on - may
+		// change what is on screen.
 		const AsciiString lobbyId = s_watchLiveLobbyId;
 		const AsciiString displayName = s_watchLiveDisplayName;
 		const Bool bPopShellOnSubmit = s_watchLivePopShellOnSubmit;
@@ -350,16 +428,49 @@ static void joinGame( AsciiString password )
 
 		if (bObserveMode)
 		{
-			// The lobby view holds the password until the stream goes live; a wrong one
-			// reprompts from there.
-			SetLobbyObserverModeWithPassword(lobbyId.str(), password.str());
-			TheShell->push("Menus/GameSpyGameOptionsMenu.wnd");
+			// Gate the read-only lobby view on the password the relay would accept. The view has
+			// no join of its own to fail, so it cannot check anything itself: opening it first
+			// put the watcher in a lobby they had never been admitted to, for any password at
+			// all. It is pushed only once the relay has answered, and pushed from here so the
+			// password keeps riding along to the stream-live handoff.
+			liveWatchValidatePassword(lobbyId, password,
+				[lobbyId, password, displayName](WatchPasswordVerdict verdict)
+				{
+					// AcceptedNotLive is the normal pre-game answer: the relay tests the
+					// password before it tests whether a stream exists.
+					if (verdict == WatchPasswordVerdict::Accepted ||
+						verdict == WatchPasswordVerdict::AcceptedNotLive ||
+						verdict == WatchPasswordVerdict::Unchecked)
+					{
+						SetLobbyObserverModeWithPassword(lobbyId.str(), password.str());
+						TheShell->push("Menus/GameSpyGameOptionsMenu.wnd");
+						return;
+					}
+
+					reportWatchPasswordFailure(verdict, lobbyId, displayName, TRUE, FALSE);
+				});
 			return;
 		}
 
-		StartLiveObserverSession(lobbyId, password, displayName);
-		if (bPopShellOnSubmit)
-			TheShell->pop();
+		// Live stream: the password is checked before the session is queued and before the shell
+		// pops. Popping first is what sent a wrong password to the main menu, with the error on a
+		// screen the player was no longer looking at.
+		liveWatchValidatePassword(lobbyId, password,
+			[lobbyId, password, displayName, bPopShellOnSubmit](WatchPasswordVerdict verdict)
+			{
+				// A live row is expected to answer 200; 404 here is a stream that ended between
+				// the list refresh and the submit, which starting a session would only wait out.
+				if (verdict == WatchPasswordVerdict::Accepted ||
+					verdict == WatchPasswordVerdict::Unchecked)
+				{
+					StartLiveObserverSession(lobbyId, password, displayName);
+					if (bPopShellOnSubmit)
+						TheShell->pop();
+					return;
+				}
+
+				reportWatchPasswordFailure(verdict, lobbyId, displayName, FALSE, bPopShellOnSubmit);
+			});
 		return;
 	}
 

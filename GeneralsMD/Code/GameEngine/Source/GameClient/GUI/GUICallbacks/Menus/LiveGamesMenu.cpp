@@ -39,7 +39,7 @@
 #include "GameClient/GadgetListBox.h"
 #include "GameClient/GadgetStaticText.h"
 #include "GameClient/GUICallbacks.h"	// liveWatchOpenPasswordPopup
-#include "GameClient/LiveObserverSession.h"	// StartLiveObserverSession
+#include "GameClient/LiveObserverSession.h"	// StartLiveObserverSession, password gate pump
 #include "GameClient/MessageBox.h"
 #include "GameClient/Shell.h"
 #include "GameClient/WindowLayout.h"
@@ -559,6 +559,10 @@ void LiveGamesMenuShutdown(void)
 	if (!s_liveGamesMode)
 		return;
 
+	// A check still in the air belongs to this screen. Its answer may not push the lobby view or
+	// start a session after the player has left the browser - they are somewhere else by then.
+	CancelLiveWatchPasswordCheck();
+
 	// Leave the screen as we found it. The controls belong to the shared layout, so a
 	// retitled heading or a hidden Copy button would otherwise persist into the next visit
 	// to the real replay menu.
@@ -593,6 +597,12 @@ void LiveGamesMenuUpdate(void)
 {
 	if (!s_liveGamesMode)
 		return;
+
+	// The password gate runs its request off the main loop, so collect the answer here. This is
+	// the screen the popup is opened from, and it must stay up either way: a wrong password
+	// re-opens the popup over this list, and a right one is what pushes the lobby view or hands
+	// the session over. Nothing below runs on another screen's behalf.
+	liveWatchPumpPasswordCheck();
 
 	// The relay fetch runs on its own thread, so collect its result here rather than via
 	// a callback - nothing off the main thread may touch gadget state.

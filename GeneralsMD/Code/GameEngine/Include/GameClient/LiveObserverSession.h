@@ -28,6 +28,8 @@
 
 #include "Lib/BaseType.h"
 
+#include <functional>
+
 #if defined(GENERALS_ONLINE)
 
 /// Queue a live-observer session for the given lobby. Records the intent only: the join waits on
@@ -60,5 +62,52 @@ Bool LiveObserverPendingSessionActive(void);
 /// queued from whichever one the player happens to be on and only that screen can tear itself
 /// down afterwards.
 Bool LiveObserverStartPendingSession(void);
+
+// ---------------------------------------------------------------------------------------
+// The watch password gate
+// ---------------------------------------------------------------------------------------
+//
+// Both ways into a watch - the read-only pre-game view and a live stream - are gated by the same
+// question, "would the relay accept this password right now?", and answered by the same call
+// (POST /direct/join). Only what a screen does with the answer differs, so the request and its
+// classification live here, once, and the two call sites say what entering means for them.
+//
+// This deliberately runs before either path changes a screen. The pre-game view has no join of
+// its own to fail, so without a gate it opens for any password at all; the live path used to pop
+// the shell before anyone knew the password was wrong, which put the error on the main menu.
+//
+// The request is synchronous with the relay's five second timeout, so it runs on a worker thread
+// and its answer is collected by liveWatchPumpPasswordCheck() - never from inside a frame.
+
+/// What the relay answered about one watch password.
+enum class WatchPasswordVerdict
+{
+	Accepted,			///< 200: the password is right and the stream is live
+	AcceptedNotLive,	///< 404: the password is right, but there is no stream yet (pre-game)
+	WrongPassword,		///< 401: the password is wrong, so the player must be asked again
+	Gone,				///< 410: the relay has already dropped that lobby
+	Unwatchable,		///< 403 or another refusal: no password can get this player in
+	Unreachable,		///< the relay did not answer at all
+	Unchecked			///< no direct transport to ask; the caller keeps its old behaviour
+};
+
+/// The continuation for one check, invoked on the main thread by liveWatchPumpPasswordCheck()
+/// exactly once for every check that starts.
+using WatchPasswordCallback = std::function<void(WatchPasswordVerdict verdict)>;
+
+/// Ask the relay whether it would accept this password, without opening a session and without
+/// touching any screen. A check already in the air is superseded: only the newest answer is
+/// delivered, and a callback of a superseded or cancelled check is never called.
+void liveWatchValidatePassword(const AsciiString& lobbyId, const AsciiString& password,
+	WatchPasswordCallback done);
+
+/// Deliver a finished check's answer to its continuation. Must be pumped by every screen the
+/// password popup can be open over; it runs UI code, so only from the main thread.
+/// Returns TRUE when an answer was delivered this call.
+Bool liveWatchPumpPasswordCheck(void);
+
+/// Drop a running check and its answer, so an answer that lands after the player left the screen
+/// cannot open a view or start a session on a screen they are no longer on.
+void CancelLiveWatchPasswordCheck(void);
 
 #endif // GENERALS_ONLINE

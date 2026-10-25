@@ -30,15 +30,23 @@
 #include "GameClient/LiveObserverSession.h"
 
 #include "Common/GlobalData.h"
+#include "Common/GencastTransport.h"		// the password gate's /direct/join probe
 #include "Common/LiveObserver.h"
 #include "Common/Recorder.h"
 #include "GameClient/ClientInstance.h"
 #include "GameClient/GameText.h"
 #include "GameClient/GameWindowTransitions.h"
-#include "GameClient/GUICallbacks.h"			// liveWatchOpenPasswordPopup
+#include "GameClient/GUICallbacks.h"		// liveWatchOpenPasswordPopup
 #include "GameClient/Shell.h"
 #include "GameNetwork/GameSpyOverlay.h"
+#include "GameNetwork/GeneralsOnline/GeneralsOnline_Settings.h"	// direct mode: the gate's scope
+#include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"		// NGMP_OnlineServicesManager
 
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <utility>
 #include <windows.h>						// timeGetTime
 
 // The queued session. Written by StartLiveObserverSession from whichever screen picked the
@@ -168,6 +176,12 @@ static Bool doLiveObserverStartPlayback(void)
 // once playback has started, so the caller can stand itself down and reveal the game.
 Bool LiveObserverStartPendingSession(void)
 {
+	// The password gate in front of this queue is part of the same watch pipeline: its answer is
+	// collected here so a re-prompt opened from the rejection path below - which lands on whatever
+	// screen the player was returned to - still completes. Every screen that pumps a session pumps
+	// the gate with it, which is why no screen has to remember to.
+	liveWatchPumpPasswordCheck();
+
 	if (!startLiveObserverGame)
 		return FALSE;
 
@@ -239,6 +253,204 @@ Bool LiveObserverStartPendingSession(void)
 	}
 
 	return FALSE;
+}
+
+// ============================================================================
+// The watch password gate
+// ============================================================================
+//
+// One question, one request, one place: POST /direct/join with the password, classified into a
+// verdict. What the answer means for a screen is the call sites' business - this half only talks
+// to the relay and hands back what it said.
+//
+// The relay's order matters and is what makes a single request enough for both paths
+// (DirectEndpoints.Join): it tests the password *before* it tests whether a stream exists. So 401
+// is always "wrong password", while 404 on a password-protected lobby can only mean "the password
+// is right and there is no stream yet", which is exactly the pre-game answer.
+
+namespace
+{
+	// One check at a time. The epoch is what makes a superseded or cancelled check harmless: the
+	// worker re-reads it under the lock before publishing, so an answer the player has walked away
+	// from is dropped instead of opening a screen they left.
+	std::mutex s_passwordGateMutex;
+	UnsignedInt s_passwordGateEpoch = 0;
+	Bool s_passwordGateRunning = FALSE;
+	Bool s_passwordGateAnswered = FALSE;
+	WatchPasswordVerdict s_passwordGateVerdict = WatchPasswordVerdict::Unreachable;
+	WatchPasswordCallback s_passwordGateDone;
+
+	WatchPasswordVerdict classifyWatchPasswordAnswer(const GencastAttemptResult& attempt)
+	{
+		switch (attempt.kind)
+		{
+			case EGencastAttempt::Success:
+				return WatchPasswordVerdict::Accepted;
+
+			case EGencastAttempt::WrongPassword:
+				return WatchPasswordVerdict::WrongPassword;
+
+			case EGencastAttempt::NotFound:
+				// See above: the password is tested before liveness, so this is not a rejection.
+				return WatchPasswordVerdict::AcceptedNotLive;
+
+			case EGencastAttempt::Held:		// Services-only, cannot come from this probe
+			case EGencastAttempt::Failed:
+			default:
+				break;
+		}
+
+		// Failed covers every status the transport does not name: 410 is a lobby the relay has
+		// already dropped, 403 is a relay with direct watch switched off, 400 a malformed request,
+		// and anything else is a refusal no password can fix.
+		switch (attempt.httpStatus)
+		{
+			case 410:
+				return WatchPasswordVerdict::Gone;
+
+			case 403:
+			case 400:
+				return WatchPasswordVerdict::Unwatchable;
+
+			case 0:
+				return WatchPasswordVerdict::Unreachable;
+
+			default:
+				return WatchPasswordVerdict::Unwatchable;
+		}
+	}
+
+	void watchPasswordCheckThread(std::string lobbyId, std::string password, UnsignedInt epoch)
+	{
+		WatchPasswordVerdict verdict = WatchPasswordVerdict::Unreachable;
+
+		// The relay transport directly, not GencastTransport::Create(): Create() re-runs the mode
+		// probe, which can reach GO for a HEAD request, and GO's interfaces are not for a worker
+		// thread. The mode decision was already taken on the main thread before this thread
+		// existed. Same reasoning as the browser's own list fetch.
+		std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+
+		if (!transport)
+		{
+			verdict = WatchPasswordVerdict::Unchecked;
+		}
+		else
+		{
+			const GencastAttemptResult attempt = transport->AttemptWatchSession(lobbyId, password);
+			verdict = classifyWatchPasswordAnswer(attempt);
+		}
+
+		liveObserverLog("liveWatchPasswordGate: lobby=%s verdict=%d\n", lobbyId.c_str(), (Int)verdict);
+
+		std::lock_guard<std::mutex> lock(s_passwordGateMutex);
+
+		if (epoch != s_passwordGateEpoch)
+		{
+			liveObserverLog("liveWatchPasswordGate: lobby=%s answer superseded or cancelled\n",
+				lobbyId.c_str());
+			return;
+		}
+
+		s_passwordGateRunning = FALSE;
+		s_passwordGateAnswered = TRUE;
+		s_passwordGateVerdict = verdict;
+	}
+}
+
+void liveWatchValidatePassword(const AsciiString& lobbyId, const AsciiString& password,
+	WatchPasswordCallback done)
+{
+	if (!done)
+		return;
+
+	if (lobbyId.isEmpty())
+	{
+		done(WatchPasswordVerdict::Unchecked);
+		return;
+	}
+
+	// Direct mode is decided here, on the main thread: resolving the mode can run a blocking HEAD
+	// against GO, and that does not belong on a worker. Same test the announce uses for "direct
+	// mode is on". Without a relay there is no endpoint to ask, and GO's ticket step stays the
+	// password gate it is today.
+	if (!NGMP_OnlineServicesManager::Settings.Relay_Direct() ||
+		NGMP_OnlineServicesManager::Settings.Relay_Direct_Url().empty())
+	{
+		done(WatchPasswordVerdict::Unchecked);
+		return;
+	}
+
+	UnsignedInt epoch = 0;
+
+	{
+		std::lock_guard<std::mutex> lock(s_passwordGateMutex);
+
+		// Supersede whatever is still in the air: the newest attempt is the one the player is
+		// waiting on, and the older answer belongs to a password they have already replaced.
+		epoch = ++s_passwordGateEpoch;
+		s_passwordGateRunning = TRUE;
+		s_passwordGateAnswered = FALSE;
+		s_passwordGateDone = std::move(done);
+	}
+
+	liveObserverLog("liveWatchPasswordGate: lobby=%s asking the relay\n", lobbyId.str());
+
+	try
+	{
+		std::thread(watchPasswordCheckThread, std::string(lobbyId.str()),
+			std::string(password.str()), epoch).detach();
+	}
+	catch (...)
+	{
+		// No worker, so no answer will ever arrive. Report "cannot check" instead of leaving the
+		// popup closed with nothing pending behind it, which would look like a dead button.
+		liveObserverLog("liveWatchPasswordGate: lobby=%s could not start a worker\n", lobbyId.str());
+
+		std::lock_guard<std::mutex> lock(s_passwordGateMutex);
+		s_passwordGateRunning = FALSE;
+		s_passwordGateAnswered = TRUE;
+		s_passwordGateVerdict = WatchPasswordVerdict::Unchecked;
+	}
+}
+
+Bool liveWatchPumpPasswordCheck(void)
+{
+	WatchPasswordCallback done;
+	WatchPasswordVerdict verdict = WatchPasswordVerdict::Unreachable;
+
+	{
+		std::lock_guard<std::mutex> lock(s_passwordGateMutex);
+
+		if (!s_passwordGateAnswered)
+			return FALSE;
+
+		s_passwordGateAnswered = FALSE;
+		verdict = s_passwordGateVerdict;
+		done = std::move(s_passwordGateDone);
+		s_passwordGateDone = nullptr;
+	}
+
+	// Outside the lock: the continuation pushes shell screens, opens message boxes and starts
+	// sessions, and none of that may run while a worker is waiting to publish.
+	if (done)
+		done(verdict);
+
+	return TRUE;
+}
+
+void CancelLiveWatchPasswordCheck(void)
+{
+	std::lock_guard<std::mutex> lock(s_passwordGateMutex);
+
+	if (!s_passwordGateRunning && !s_passwordGateAnswered && !s_passwordGateDone)
+		return;
+
+	liveObserverLog("liveWatchPasswordGate: cancelled\n");
+
+	++s_passwordGateEpoch;		// an answer still in the air is now stale
+	s_passwordGateRunning = FALSE;
+	s_passwordGateAnswered = FALSE;
+	s_passwordGateDone = nullptr;
 }
 
 #endif // GENERALS_ONLINE
