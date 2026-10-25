@@ -6,9 +6,14 @@
 #include "Common/GlobalData.h"
 #include "Common/LiveObserver.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
+// The pregame announce reads the player's Services id, and OnlineServices_Init.h only forward
+// declares the auth interface.
+#include "GameNetwork/GeneralsOnline/OnlineServices_Auth.h"
 // The pregame announce reads the lobby the player is sitting in; the transport itself needs
 // LobbyEntry/LobbyMemberEntry for that.
 #include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
+// the announce also asks the game whether a match is running (GameInfo::isGameInProgress)
+#include "GameNetwork/GeneralsOnline/NGMPGame.h"
 
 #include <curl/curl.h>
 
