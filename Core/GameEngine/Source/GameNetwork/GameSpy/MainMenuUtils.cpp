@@ -65,7 +65,6 @@ static Bool checkingForPatchBeforeGameSpy = FALSE;
 static Int checksLeftBeforeOnline = 0;
 static Int timeThroughOnline = 0; // used to avoid having old callbacks cause problems
 static Bool mustDownloadPatch = FALSE;
-static Bool cantConnectBeforeOnline = FALSE;
 static std::list<QueuedDownload> queuedDownloads;
 
 static char *MOTDBuffer = nullptr;
@@ -132,7 +131,7 @@ static void patchBeforeOnlineCallback()
 static void noPatchBeforeOnlineCallback()
 {
 	queuedDownloads.clear();
-	if (mustDownloadPatch || cantConnectBeforeOnline)
+	if (mustDownloadPatch)
 	{
 		// go back to normal
 		HandleCanceledDownload();
@@ -195,13 +194,9 @@ static void startOnline()
 		onlineCancelWindow = nullptr;
 	}
 
-	if (cantConnectBeforeOnline)
-	{
-		MessageBoxOk(TheGameText->fetch("GUI:CannotConnectToServservTitle"),
-			TheGameText->fetch("GUI:CannotConnectToServserv"),
-			noPatchBeforeOnlineCallback);
-		return;
-	}
+	// The pre-online servserv check that used to run before this point is gone (see
+	// StartPatchCheck). Nothing in this build can decide "we could not reach the pre-online
+	// host" any more, so there is no cannot-connect dialog to raise here: go straight on.
 	if (!queuedDownloads.empty())
 	{
 		if (!hasWriteAccess())
@@ -380,7 +375,6 @@ static GHTTPBool configCallback( GHTTPRequest request, GHTTPResult result,
 			TheWindowManager->winDestroy(onlineCancelWindow);
 			onlineCancelWindow = nullptr;
 		}
-		cantConnectBeforeOnline = TRUE;
 		if (!checksLeftBeforeOnline)
 		{
 			startOnline();
@@ -521,7 +515,6 @@ static GHTTPBool gamePatchCheckCallback( GHTTPRequest request, GHTTPResult resul
 	{
 		if (!checkingForPatchBeforeGameSpy)
 			return GHTTPTrue;
-		cantConnectBeforeOnline = TRUE;
 		if (!checksLeftBeforeOnline)
 		{
 			startOnline();
@@ -800,7 +793,6 @@ void HTTPThinkWrapper()
 		switch(ret)
 		{
 		case LOOKUP_FAILED:
-			cantConnectBeforeOnline = TRUE;
 			startOnline();
 			break;
 		case LOOKUP_SUCCEEDED:
@@ -844,7 +836,6 @@ void StartPatchCheck()
 {
 
     checkingForPatchBeforeGameSpy = TRUE;
-    cantConnectBeforeOnline = FALSE;
     timeThroughOnline++;
     checksLeftBeforeOnline = 0;
 
@@ -895,108 +886,29 @@ void StartPatchCheck()
         return;
 	}
 
-    onlineCancelWindow = MessageBoxCancel(TheGameText->fetch("GUI:CheckingForPatches"),
-        TheGameText->fetch("GUI:CheckingForPatches"), CancelPatchCheckCallbackAndReopenDropdown);
-
-	NGMP_OnlineServicesManager::GetInstance()->StartVersionCheck([](bool bSuccess, bool bNeedsUpdate)
-		{
-			// Observer/plugin-dev builds never want the update gate, in any environment or flag state.
-			//
-			// NOTE: this verdict is useless as a "new release" signal. The version check sends a
-			// CRC32 of the whole exe file, and a locally built exe matches no official release, so
-			// the service answers NEEDS_UPDATE on every launch forever. Do not build notifications
-			// on it - it is an exe-identity check, not a release check.
-			// Workspace-local divergence - MUST NOT be pushed upstream.
-			bNeedsUpdate = false;
-			cantConnectBeforeOnline = !bSuccess;
-			mustDownloadPatch = bNeedsUpdate;
-
-			if (!bSuccess)
-			{
-				if (onlineCancelWindow)
-				{
-					TheWindowManager->winDestroy(onlineCancelWindow);
-					onlineCancelWindow = NULL;
-				}
-
-				// TODO_NGMP: do this everywhere teardowngamespy was called
-				NGMP_OnlineServicesManager::GetInstance()->SetPendingFullTeardown(EGOTearDownReason::USER_REQUESTED_SILENT);
-
-				MessageBoxOk(TheGameText->fetch("GUI:CannotConnectToServservTitle"),
-					TheGameText->fetch("GUI:CannotConnectToServserv"),
-					noPatchBeforeOnlineCallback);
-			}
-			else
-			{
-				if (!bNeedsUpdate)
-				{
-					startOnline();
-				}
-				else
-				{
-					// TODO_NGMP: Later we should allow in-game updates
-					if (onlineCancelWindow)
-					{
-						TheWindowManager->winDestroy(onlineCancelWindow);
-						onlineCancelWindow = NULL;
-					}
-
-					// NGMP_NOTE: This checks you can write to the local dir, we actually write to my docs data dir now, because it's safer, so we don't really need this chekc
-					/*
-					if (!hasWriteAccess(true))
-					{
-						MessageBoxOk(TheGameText->fetch("GUI:Error"),
-							TheGameText->fetch("GUI:MustHaveAdminRights"),
-							CancelPatchCheckCallbackAndReopenDropdown);
-					}
-					else*/ if (mustDownloadPatch)
-					{
-						// NOTE: we treat all patches as mandatory currently
-						onlineCancelWindow = MessageBoxOkCancel(TheGameText->fetch("GUI:PatchAvailable"),
-							UnicodeString(L"Press OK to begin updating.\n\nOtherwise, you can visit www.playgenerals.online to download the latest update manually."), []()
-							{
-								WindowLayout* layout;
-								layout = TheWindowManager->winCreateLayout(AsciiString("Menus/DownloadMenu.wnd"));
-								layout->runInit();
-								layout->hide(FALSE);
-								layout->bringForward();
-
-								NGMP_OnlineServicesManager::GetInstance()->StartDownloadUpdate([]()
-									{
-										MessageBoxOk(UnicodeString(L"Update Ready"), UnicodeString(L"Press OK to begin installing the patch"), []()
-											{
-												NGMP_OnlineServicesManager::GetInstance()->LaunchPatcher();
-											});
-									});
-
-							}, CancelPatchCheckCallbackAndReopenDropdown);
-					}
-				}
-			}
-		});
-	
-
-	// TODO_NGMP: Impl patch checks again
-
-	/*
-	s_asyncDNSLookupInProgress = TRUE;
-	Char hostname[] = "servserv.generals.ea.com";
-	Int ret = asyncGethostbyname(hostname);
-	switch(ret)
-	{
-	case LOOKUP_FAILED:
-		cantConnectBeforeOnline = TRUE;
-		startOnline();
-		break;
-	case LOOKUP_SUCCEEDED:
-		reallyStartPatchCheck();
-		break;
-	}
-	*/
+	// GENERALS ONLINE
+	//
+	// There is no pre-online check left to run here. The routine this function used to
+	// start (reallyStartPatchCheck) fetched game/map patches, Config.txt and the MOTD over
+	// HTTP from servserv.generals.ea.com, a host that no longer exists, and the GameSpy
+	// login it prepared for is not part of this build. Its GO successor - the exe-CRC
+	// version check - is an identity check that no locally built client can satisfy, and
+	// its verdict is ignored anyway, so all it could still do was fail and put the stale
+	// "Cannot connect to Generals Online services" dialog in front of the login screen.
+	//
+	// Pressing Online goes straight to the GO path. GO's own login and lobby calls report
+	// any real connection problem on the screens that own them.
+	startOnline();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////
 
+// LEGACY (pre-GameSpy servserv): fetches game/map patches, Config.txt and the MOTD from
+// servserv.generals.ea.com. That host is gone and this build never calls this function:
+// its only remaining reference is HTTPThinkWrapper's async-DNS branch, and nothing sets
+// s_asyncDNSLookupInProgress to TRUE any more. Do not re-hook it into StartPatchCheck: it
+// can only fail, and a failure used to surface as the false "Cannot connect to Generals
+// Online services" dialog.
 static void reallyStartPatchCheck()
 {
 	checksLeftBeforeOnline = 4;
