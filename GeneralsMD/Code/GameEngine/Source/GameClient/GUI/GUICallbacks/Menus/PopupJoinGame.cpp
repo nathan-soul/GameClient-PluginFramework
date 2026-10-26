@@ -403,6 +403,15 @@ static void reportWatchPasswordFailure(WatchPasswordVerdict verdict, const Ascii
 			body = UnicodeString(L"That lobby is no longer watchable.");
 			break;
 
+		// 403: watching is grouped, and this account is not in the streamer's group. Saying
+		// "wrong password" here would send the player hunting for a password that does not
+		// exist for them, so the two refusals are kept apart.
+		case WatchPasswordVerdict::NotInWatchGroup:
+			body = UnicodeString(L"The relay does not allow this account to watch that game: "
+				L"watching is grouped, and this account is not in the streamer's watch group. "
+				L"Ask the relay admin to add you - another password will not help.");
+			break;
+
 		case WatchPasswordVerdict::Unreachable:
 			body = UnicodeString(L"The relay did not answer. Nothing has changed - you can try again.");
 			break;

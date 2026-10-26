@@ -29,6 +29,7 @@
 #include "Lib/BaseType.h"
 
 #include <functional>
+#include <string>
 
 #if defined(GENERALS_ONLINE)
 
@@ -41,11 +42,15 @@
 /// the lobby's broadcast delay (-1 = unknown), which pre-seeds the countdown and join timeout
 /// until GO's admission hold or the relay's ROLE pins the real value; matchId names which match
 /// of that lobby to watch (direct mode - empty means "whichever the relay considers newest").
+///
+/// kickExisting is only ever TRUE for the retry after the player agreed, in the takeover dialog,
+/// to disconnect the session this account already has on that match.
 void StartLiveObserverSession(const AsciiString& lobbyId,
 	const AsciiString& password = AsciiString::TheEmptyString,
 	const AsciiString& displayName = AsciiString::TheEmptyString,
 	Int delaySeconds = -1,
-	const AsciiString& matchId = AsciiString::TheEmptyString);
+	const AsciiString& matchId = AsciiString::TheEmptyString,
+	Bool kickExisting = FALSE);
 
 /// Abort a queued or connecting live-observer session. The only other way out is the join
 /// timeout; the read-only lobby view needs LEAVE to cancel mid-wait.
@@ -87,8 +92,9 @@ enum class WatchPasswordVerdict
 	Accepted,			///< 200: the password is right and the stream is live
 	AcceptedNotLive,	///< 404: the password is right, but there is no stream yet (pre-game)
 	WrongPassword,		///< 401: the password is wrong, so the player must be asked again
+	NotInWatchGroup,	///< 403: this account is not in the game's watch group, so no password helps
 	Gone,				///< 410: the relay has already dropped that lobby
-	Unwatchable,		///< 403 or another refusal: no password can get this player in
+	Unwatchable,		///< any other refusal: no password can get this player in
 	Unreachable,		///< the relay did not answer at all
 	Unchecked			///< no direct transport to ask; the caller keeps its old behaviour
 };
@@ -116,5 +122,16 @@ Bool liveWatchPumpPasswordCheck(void);
 /// Drop a running check and its answer, so an answer that lands after the player left the screen
 /// cannot open a view or start a session on a screen they are no longer on.
 void CancelLiveWatchPasswordCheck(void);
+
+/// The takeover question, asked the one way from both places a watch can be refused for it (the
+/// password gate and the session join): "this account is already watching this game, disconnect
+/// that connection?". since/client are the relay's own account of the other session and may be
+/// empty, in which case the wording names no particular connection.
+///
+/// onConfirm runs on the main thread when the player says yes; "No" just closes the box and
+/// nothing else happens. Kept here so the wording and the compromised-account warning cannot
+/// drift apart between the two paths.
+void liveWatchPromptTakeOver(const std::string& since, const std::string& client,
+	std::function<void()> onConfirm);
 
 #endif // GENERALS_ONLINE

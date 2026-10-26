@@ -60,6 +60,7 @@
 #include "GameNetwork/GameSpy/LobbyUtils.h"
 
 #if defined(GENERALS_ONLINE)
+#include "Common/GencastTransport.h"		// the relay decides who may stream; /stream reads that
 #include "Common/LiveObserver.h"
 #include "GameClient/LobbyObserverMenu.h"
 #include "GameClient/LiveGamesMenu.h"
@@ -2564,6 +2565,12 @@ void WOLGameSetupMenuUpdate( WindowLayout * layout, void *userData)
 		LobbyObserverUpdate(layout, userData);
 		return;
 	}
+
+	// The relay decides who may stream, and it can change its mind while the player sits here:
+	// the admin grants the right, or another source opens the match. Re-ask when the cached
+	// answer has gone stale - which is also what republishes a lobby whose announce was held
+	// while the answer was still unknown.
+	GencastTickStreamPermission();
 #endif
 
 	// Refresh only the fast-changing connection indicators each frame.
@@ -3747,7 +3754,19 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/me <message> - Send an emote."), helpColor, -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/friendsonly - Let only friends join (host only)."), helpColor, -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/public - Let anyone join (host only)."), helpColor, -1, -1);
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/stream <on|off> - Broadcast this game so others can watch it live (host only)."), helpColor, -1, -1);
+
+		// Only advertised when the relay has enabled it for this player on this game: a command
+		// that exists but always refuses is worse than one that is not offered, and this help
+		// block is the only place the switch is visible at all.
+		if (GencastMayStreamCurrentLobby())
+		{
+			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/stream <on|off> - Broadcast this game so others can watch it live (host only)."), helpColor, -1, -1);
+		}
+		else if (GencastStreamPermissionReason() == "denied")
+		{
+			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"Streaming is not enabled for this account on this game - the relay admin can turn it on."), helpColor, -1, -1);
+		}
+
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/delay <seconds> - Sets how far behind live observers are held (host only)."), helpColor, -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observers - Announces who is watching this lobby (host only)."), helpColor, -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observerchat <on|off> - Lets pre-game observers send chat into this lobby (host only)."), helpColor, -1, -1);
@@ -4021,6 +4040,37 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 
 		if (asciiVal == "on")
 		{
+			// The relay decides who may stream, so the switch does not exist for an account it
+			// has not enabled: turning it on here and having the relay refuse the announce at
+			// match start would be a promise broken after the players are already in the game.
+			// Asking again on the attempt is what makes a right granted mid-lobby appear.
+			if (!GencastMayStreamCurrentLobby())
+			{
+				GencastRefreshStreamPermission();
+
+				const std::string reason = GencastStreamPermissionReason();
+				UnicodeString msg;
+
+				if (reason == "denied")
+				{
+					msg = UnicodeString(L"Streaming is not enabled for this account on this game. "
+						L"Ask the relay admin to enable it.");
+				}
+				else
+				{
+					// No answer yet, or none that grants it. Fail closed, but say which it is:
+					// an admin who just flipped the switch needs a retry, not a dead end.
+					msg = UnicodeString(L"The relay has not confirmed streaming rights for this "
+						L"account on this game - streaming stays off. Try again in a moment, or ask "
+						L"the relay admin.");
+				}
+
+				GadgetListBoxAddEntryText(listboxGameSetupChat, msg,
+					GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
+
+				return TRUE; // was a slash command
+			}
+
 			applyLiveStreamEnabled(true);
 			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"Streaming enabled - you will connect to the relay as a streamer"), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 		}

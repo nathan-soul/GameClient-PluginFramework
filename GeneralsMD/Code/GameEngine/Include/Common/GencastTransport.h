@@ -67,6 +67,34 @@ struct GencastWatchSession
 	std::string sessionUrl; ///< the relay's pre-game session feed (/direct/session/{id})
 	std::string streamUrl;
 	std::string errorMessage;
+	// 409: this account already watches this match, so no session was issued. The two fields
+	// are the relay's own account of that other connection, and they exist so the player can be
+	// told when and from where before deciding to disconnect it.
+	bool duplicate = false;
+	std::string duplicateSince;
+	std::string duplicateClient;
+};
+
+/*
+**	The relay's answer to "may this player stream this match?".
+**
+**	Advisory only: the client asks so it can keep a switch it could not honour out of the UI,
+**	and the relay checks the same rule again when a stream is announced. It is deliberately
+**	not a value this client ever sends back as proof - a can_stream field from the client is
+**	exactly the claim the relay stopped trusting.
+**
+**	Fail closed: mayStream defaults to false, and a relay that could not be asked at all (no
+**	answer, 404, unreadable body, missing field) leaves it false. Streaming needs an explicit
+**	yes; a broken question is never an answer.
+*/
+struct GencastStreamPermission
+{
+	bool canStream = false;   ///< the player's own right, as the relay stores it
+	bool matchEnabled = false;///< this match already accepts extra sources
+	bool mayStream = false;   ///< canStream || matchEnabled: the relay's verdict
+	// "player_enabled", "match_enabled" or "denied" while the relay answered. Empty when it did
+	// not, which is the same refusal as "denied" but says why nobody can explain it.
+	std::string reason;
 };
 
 struct GencastStreamRegistration
@@ -88,6 +116,9 @@ enum class EGencastAttempt
 	NotFound,		// not watchable yet: the announce (relay) or liveness report (GO) has not landed
 	Held,			// the server is holding this viewer; Services admission control only
 	WrongPassword,	// must be shown as a wrong password, never as a signed-out session
+	// 409: this account already has a watch session for this match. Not retryable and not a
+	// password problem - only the player can say whether that other connection may be dropped.
+	Duplicate,
 	Failed
 };
 
@@ -104,11 +135,16 @@ struct GencastAttemptResult
 	std::string streamUrl;
 	std::string errorMessage;
 	int holdSeconds = 0;
+	// Duplicate only: when the other session started and which client it came from, as the relay
+	// reports them. Empty when the relay did not say.
+	std::string duplicateSince;
+	std::string duplicateClient;
 };
 
 using GencastWatchListCallback = std::function<void(bool success, const std::vector<GencastWatchEntry>& entries)>;
 using GencastSessionCallback = std::function<void(const GencastWatchSession& session)>;
 using GencastRegisterCallback = std::function<void(const GencastStreamRegistration& registration)>;
+using GencastStreamPermissionCallback = std::function<void(const GencastStreamPermission& permission)>;
 
 /// Asked between attempts by the shared watch policy. TRUE means "stop trying": the caller is
 /// going away, so the retry window must not be able to hold its thread.
@@ -142,12 +178,34 @@ public:
 	// cancelled is polled between attempts and during the wait: the observer's close() joins
 	// the thread that calls this, so a viewer who leaves mid-retry must not wait out the whole
 	// window. Unset means "never cancelled".
+	//
+	// watcherId is the GO user id of the viewer. Every join carries it: a watch session belongs
+	// to an account, so it is what the relay gates the group and the per-watcher password on,
+	// and what lets it refuse a second connection for the same match. There is no anonymous
+	// path - a transport that cannot name the viewer fails the join instead of asking.
+	//
+	// kickExisting asks the relay to drop a session this account already has on this match
+	// (409 -> retry). Only ever set after the player confirmed that takeover.
 	virtual GencastAttemptResult AttemptWatchSession(const std::string& lobbyId,
-		const std::string& password, const std::string& matchId) = 0;
+		const std::string& password, const std::string& matchId, uint64_t watcherId,
+		bool kickExisting) = 0;
 
 	void RequestWatchSession(const std::string& lobbyId, const std::string& password,
-		const std::string& matchId, GencastSessionCallback done,
+		const std::string& matchId, uint64_t watcherId, bool kickExisting,
+		GencastSessionCallback done,
 		GencastCancelPredicate cancelled = GencastCancelPredicate());
+
+	// May this player stream this match? Asked when the player enters a lobby and again when a
+	// stream announce is refused, because the answer is per player and per match rather than per
+	// install: the admin can grant the right, and another source can open the match's pool.
+	//
+	// The result is advisory UI state, never an authority. The relay decides again when a
+	// stream is announced; this only keeps a switch out of a UI that could not honour it.
+	//
+	// done runs on the calling thread - the request is synchronous like every other call here -
+	// and is always called exactly once, with mayStream false when the relay could not be asked.
+	virtual void QueryStreamPermission(uint64_t userId, const std::string& matchId,
+		GencastStreamPermissionCallback done) = 0;
 
 	// Called by the shared policy when the viewer's hold state changes: waiting behind an
 	// admission hold or a broadcast delay. Services sets it, the relay never does.
@@ -245,3 +303,44 @@ void GencastAnnounceCurrentLobby();
 */
 void GencastUnannounceCurrentLobby();
 void GencastEndCurrentMatch(const char* reason);
+
+/*
+**	The relay's streaming permission for the lobby the local player is in.
+**
+**	A player may stream when the admin granted the right, or when the match they are in already
+**	accepts sources - so the answer belongs to (player, match) and has to be asked for, cached,
+**	and asked again when the situation changes: on entering a lobby, and after an announce was
+**	refused.
+**
+**	Fail closed. Until the relay has actually said yes for this lobby and this match, the answer
+**	here is no: a 404, a timeout, an unreadable body or a body without may_stream all mean the
+**	client does not know, and "does not know" must never be shown as "may". No stream is
+**	announced on an unknown either - the whole point of asking first is not to make the relay
+**	say no to something the player was shown as possible.
+*/
+
+/// Ask the relay for this player's permission on the lobby they are in. Runs on a worker (the
+/// request is synchronous with a five second timeout, and this is reached from a lobby refresh),
+/// and does nothing when the same question was answered moments ago. No-op outside direct mode.
+void GencastRefreshStreamPermission();
+
+/// Re-ask when the cached answer has gone stale, so a right the admin grants while the player
+/// sits in a lobby shows up without leaving and re-entering it. Must be pumped from the lobby's
+/// update: it starts at most one request per staleness window.
+void GencastTickStreamPermission();
+
+/// Ask the relay right now, on the calling thread, and cache the answer.
+///
+/// For the one caller that must not act on a cached guess: the streamer, about to announce. It
+/// already blocks on the relay for that announce, so one more synchronous call costs nothing it
+/// has not already paid - and it is the last place where "not granted" can still stop a request.
+/// Returns FALSE unless the relay granted it, so a failed question refuses the announce.
+bool GencastQueryStreamPermissionNow(void);
+
+/// The relay's answer for the lobby the player is in, as last received. FALSE whenever it is not
+/// an explicit yes - including "not asked yet" and "the relay could not be asked".
+bool GencastMayStreamCurrentLobby(void);
+
+/// Why: "player_enabled", "match_enabled" or "denied" when the relay answered, "" when it did
+/// not. For wording, never for a decision.
+std::string GencastStreamPermissionReason(void);

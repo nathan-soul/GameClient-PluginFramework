@@ -34,6 +34,8 @@
 #include "GameLogic/GameLogic.h"	// the buffering gate pauses the game; see updatePlaybackGate
 #include "GameClient/ClientInstance.h"
 #include "GameClient/InGameUI.h"
+// Every watch join names the account it is for, and the id comes from the auth interface.
+#include "GameNetwork/GeneralsOnline/OnlineServices_Auth.h"
 #include "GameNetwork/GeneralsOnline/NGMP_interfaces.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
 
@@ -1176,6 +1178,19 @@ LiveObserver* createLiveObserver()
 // in LiveObserver.h.
 static bool g_bLiveObserverReturnedFromGame = false;
 
+// One-shot "this session was taken over by another client"; see LiveObserverConsumeTakenOver.
+// Written by the network thread (the relay's ERROR frame), read by the shell: a plain bool is
+// enough because the write happens before the session starts winding down and the read happens
+// after the game has ended, with a thread join in between.
+static bool g_bLiveObserverTakenOver = false;
+
+Bool LiveObserverConsumeTakenOver(void)
+{
+	const Bool takenOver = g_bLiveObserverTakenOver ? TRUE : FALSE;
+	g_bLiveObserverTakenOver = false;
+	return takenOver;
+}
+
 Bool LiveObserverConsumeReturnedFromGame(void)
 {
 	const Bool returned = g_bLiveObserverReturnedFromGame ? TRUE : FALSE;
@@ -1258,6 +1273,7 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 		// close() joins this thread, so the retry window must stop as soon as the session is
 		// cancelled - otherwise leaving a watch blocks on the relay for the whole window.
 		transport->RequestWatchSession(m_gameId.str(), m_password, m_matchId.str(),
+			m_watcherUserId, m_kickExisting,
 			[&](const GencastWatchSession& session)
 			{
 				ok = session.success;
@@ -1274,6 +1290,19 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 					if (session.httpStatus == 401)
 					{
 						m_passwordRejected.store(TRUE);
+					}
+
+					// 409: this account already watches this match. The join pump asks whether
+					// that other connection may be dropped, and it can only name it from these
+					// two fields, so they are published before the flag that sends it looking.
+					if (session.duplicate)
+					{
+						{
+							std::lock_guard<std::mutex> lock(m_duplicateMutex);
+							m_duplicateSince = session.duplicateSince;
+							m_duplicateClient = session.duplicateClient;
+						}
+						m_duplicateSession.store(TRUE);
 					}
 
 					liveObserverLog("LiveObserver::fetchWatchTicket: lobby=%s direct failed status=%d %s\n",
@@ -1454,13 +1483,37 @@ bool LiveObserver::fetchWatchTicket(AsciiString& outConnectUrl)
 }
 
 void LiveObserver::connect(const AsciiString& lobbyId, const std::string& password,
-	Int expectedDelaySeconds, const AsciiString& matchId)
+	Int expectedDelaySeconds, const AsciiString& matchId, Bool kickExisting)
 {
 	m_shouldRun.store(true);
 	m_password = password;
 	m_passwordRejected.store(FALSE);
 	m_expectedDelaySeconds = expectedDelaySeconds;
 	m_joinStartedAtMs = timeGetTime();
+	m_kickExisting = (kickExisting != FALSE);
+
+	// The account every join is made for, read here on the main thread because the network
+	// thread must not go looking for GO's interfaces. 0 means "not signed in": the join is then
+	// refused by the transport instead of being sent without a watcher id.
+	m_watcherUserId = 0;
+	NGMP_OnlineServices_AuthInterface* auth =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+	if (auth != nullptr)
+	{
+		const int64_t userId = auth->GetUserID();
+		if (userId > 0)
+		{
+			m_watcherUserId = (uint64_t)userId;
+		}
+	}
+
+	// A new attempt: whatever the previous one learned about a duplicate session is history.
+	{
+		std::lock_guard<std::mutex> lock(m_duplicateMutex);
+		m_duplicateSince.clear();
+		m_duplicateClient.clear();
+	}
+	m_duplicateSession.store(FALSE);
 
 	// The lobby id is all this needs for admission through GO, which mints a single-use ticket
 	// for this player and answers with the complete relay URL (see fetchWatchTicket). In direct
@@ -1503,6 +1556,18 @@ void LiveObserver::close()
 	m_connected.store(false);
 	m_headerReceived.store(false);
 	m_streamEnded.store(false);
+}
+
+std::string LiveObserver::getDuplicateSince() const
+{
+	std::lock_guard<std::mutex> lock(m_duplicateMutex);
+	return m_duplicateSince;
+}
+
+std::string LiveObserver::getDuplicateClient() const
+{
+	std::lock_guard<std::mutex> lock(m_duplicateMutex);
+	return m_duplicateClient;
 }
 
 // ============================================================================
@@ -1961,6 +2026,7 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
 		// Payload is JSON {"reason":"...","msg":"..."} when the relay sends one; older
 		// relays send a bare text. Parse the reason for the player-facing line.
 		UnicodeString reasonText(L"stream ended unexpectedly");
+		std::string reasonName;
 		if (len > 0)
 		{
 			const std::string json(payload, len);
@@ -1971,8 +2037,27 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
 				reasonStart += strlen(REASON_KEY);
 				const char* reasonEnd = strchr(reasonStart, '"');
 				if (reasonEnd)
-					reasonText = chatUtf8ToWide(std::string(reasonStart, reasonEnd - reasonStart));
+				{
+					reasonName.assign(reasonStart, reasonEnd - reasonStart);
+					reasonText = chatUtf8ToWide(reasonName);
+				}
 			}
+		}
+
+		// "taken_over" is not a disaster in the relay's sense: this account was used to watch
+		// the same match somewhere else, and that new session replaced this one. It has to be
+		// told apart from every other error, because it is the only one the player must act on -
+		// somebody else is watching with their account.
+		const bool takenOver = (reasonName == "taken_over");
+
+		if (takenOver)
+		{
+			liveObserverLog("LiveObserver: session taken over by another client - stopping\n");
+
+			// Latched for the shell: the notice cannot be shown from here (this is the network
+			// thread, and the game is about to end anyway), so the screen the player lands on
+			// raises it.
+			g_bLiveObserverTakenOver = true;
 		}
 
 		{
@@ -1984,8 +2069,18 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
 				entry.colorArgb = 0xFF7A5Au;    // red: a failure, not a chat line
 				entry.spectator = FALSE;
 				entry.disaster = TRUE;
-				entry.text.format(L"Stream lost - the relay ended the session (%ls)",
-					reasonText.str());
+
+				if (takenOver)
+				{
+					entry.text = UnicodeString(L"Session taken over - another client is watching "
+						L"with this account. Change your password if that was not you.");
+				}
+				else
+				{
+					entry.text.format(L"Stream lost - the relay ended the session (%ls)",
+						reasonText.str());
+				}
+
 				m_chatQueue.push_back(entry);
 			}
 		}

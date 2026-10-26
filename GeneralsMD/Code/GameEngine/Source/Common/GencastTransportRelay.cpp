@@ -350,14 +350,112 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 			done(true, entries);
 		}
 
+		void QueryStreamPermission(uint64_t userId, const std::string& matchId,
+			GencastStreamPermissionCallback done) override
+		{
+			// Fail closed: everything below leaves this at "no" unless the relay explicitly says
+			// otherwise. A 404 from a relay that does not have the endpoint yet, a timeout, an
+			// unreadable body and a body without may_stream are all the same answer.
+			GencastStreamPermission permission;
+
+			if (!done)
+			{
+				return;
+			}
+
+			if (userId == 0)
+			{
+				// The right hangs on an account, so there is no question to ask. Asking about
+				// nobody would also let the answer be applied to whoever happens to be playing.
+				GencastDebugLog("gencast: stream permission skipped, no user id");
+				done(permission);
+				return;
+			}
+
+			std::string url = BaseUrl() + "/direct/stream-permission?user_id="
+				+ std::to_string((unsigned long long)userId);
+
+			// Which game: the same id the watch list and the announce use, so the answer is about
+			// the match the player is in rather than about the lobby's newest one.
+			if (!matchId.empty())
+			{
+				url += "&match_id=" + matchId;
+			}
+
+			HttpResponse response;
+			const bool answered = Perform(url, nullptr, response);
+
+			if (!answered || response.status != 200)
+			{
+				GencastDebugLog("gencast: stream permission user=%llu match=%s -> %s status=%ld, "
+					"treated as denied",
+					(unsigned long long)userId, matchId.c_str(),
+					answered ? "refused" : "relay unreachable", response.status);
+				done(permission);
+				return;
+			}
+
+			try
+			{
+				const nlohmann::json body = nlohmann::json::parse(response.body);
+
+				permission.canStream = body.value("can_stream", false);
+				permission.matchEnabled = body.value("match_enabled", false);
+				// may_stream is the field the client acts on, and it is never derived here: a
+				// body that omits it is a refusal, not an invitation to compute can_stream ||
+				// match_enabled from whatever else arrived.
+				permission.mayStream = body.value("may_stream", false);
+				permission.reason = body.value("reason", std::string());
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				// Unreadable is not permission either.
+				permission = GencastStreamPermission();
+			}
+
+			GencastDebugLog("gencast: stream permission user=%llu match=%s -> may=%d can=%d "
+				"enabled=%d reason=%s",
+				(unsigned long long)userId, matchId.c_str(), permission.mayStream ? 1 : 0,
+				permission.canStream ? 1 : 0, permission.matchEnabled ? 1 : 0,
+				permission.reason.empty() ? "(none)" : permission.reason.c_str());
+
+			done(permission);
+		}
+
 		GencastAttemptResult AttemptWatchSession(const std::string& lobbyId,
-			const std::string& password, const std::string& matchId) override
+			const std::string& password, const std::string& matchId, uint64_t watcherId,
+			bool kickExisting) override
 		{
 			GencastAttemptResult result;
+
+			// Every join names the account it is for. The relay rejects one without a watcher id
+			// (400), and a client that has no id to send has no session to ask for either - so
+			// this is refused here rather than turned into a request that cannot be honoured.
+			if (watcherId == 0)
+			{
+				GencastDebugLog("gencast: join lobby=%s skipped, no watcher id", lobbyId.c_str());
+
+				result.kind = EGencastAttempt::Failed;
+				result.errorMessage = "Sign in to Generals Online to watch a game.";
+				return result;
+			}
 
 			nlohmann::json request;
 			request["lobby_id"] = lobbyId;
 			request["password"] = password;
+			// The GO user id, which is what the relay gates the watch group, the watcher's own
+			// password and the duplicate rule on.
+			request["watcher_id"] = (unsigned long long)watcherId;
+
+			// Who is asking, so a 409 can tell the next client which connection it would be
+			// disconnecting. Purely descriptive: the relay never grants anything from it.
+			request["client_id"] = GencastClientId();
+
+			// Only after the player confirmed taking the account's other connection over.
+			if (kickExisting)
+			{
+				request["kick_existing"] = true;
+			}
 
 			// Which match of that lobby to watch. Without it the relay picks the newest game that
 			// has not ended, which is the wrong one when a finished match is still in its post-game
@@ -402,6 +500,49 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 
 				result.kind = EGencastAttempt::WrongPassword;
 				result.errorMessage = "Wrong password.";
+				return result;
+			}
+
+			// This account already watches this match. Not a refusal to retry and not a password
+			// problem: the relay reports when and from where that other connection came, and the
+			// player is the only one who can say whether it may be dropped. Returning the details
+			// intact is the whole point - the dialog cannot name the connection without them.
+			if (response.status == 409)
+			{
+				result.kind = EGencastAttempt::Duplicate;
+
+				try
+				{
+					const nlohmann::json body = nlohmann::json::parse(response.body);
+
+					// Read each field on its own: the relay may print `since` as a string or as
+					// an epoch number, and one unexpected type must not throw away the other
+					// field the dialog needs to name the connection.
+					if (body.contains("since"))
+					{
+						result.duplicateSince = body["since"].is_string()
+							? body["since"].get<std::string>() : body["since"].dump();
+					}
+
+					if (body.contains("client"))
+					{
+						result.duplicateClient = body["client"].is_string()
+							? body["client"].get<std::string>() : body["client"].dump();
+					}
+
+					result.errorMessage = body.value("detail",
+						std::string("This account is already watching this game."));
+				}
+				catch (const nlohmann::json::exception&)
+				{
+					// A 409 without a readable body is still a 409: the dialog falls back to
+					// wording that names no particular connection.
+					result.errorMessage = "This account is already watching this game.";
+				}
+
+				GencastDebugLog("gencast: join lobby=%s -> duplicate session since=%s client=%s",
+					lobbyId.c_str(), result.duplicateSince.c_str(), result.duplicateClient.c_str());
+
 				return result;
 			}
 

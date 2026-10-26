@@ -35,11 +35,14 @@
 #include "Common/Recorder.h"
 #include "GameClient/ClientInstance.h"
 #include "GameClient/GameText.h"
+#include "GameClient/GameWindowManager.h"	// MessageBoxYesNo, via liveWatchPromptTakeOver
 #include "GameClient/GameWindowTransitions.h"
 #include "GameClient/GUICallbacks.h"		// liveWatchOpenPasswordPopup
+#include "GameClient/MessageBox.h"
 #include "GameClient/Shell.h"
 #include "GameNetwork/GameSpyOverlay.h"
 #include "GameNetwork/GeneralsOnline/GeneralsOnline_Settings.h"	// direct mode: the gate's scope
+#include "GameNetwork/GeneralsOnline/OnlineServices_Auth.h"		// GetUserID: the join's watcher id
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"		// NGMP_OnlineServicesManager
 
 #include <memory>
@@ -57,12 +60,13 @@ static AsciiString s_liveObserverPassword;		// password for a password-protected
 static AsciiString s_liveObserverDisplayName;	// lobby name, for the password reprompt title
 static Int s_liveObserverDelaySeconds = -1;		// lobby broadcast delay, -1 = unknown
 static AsciiString s_liveObserverMatchId;		// which match of that lobby (direct mode, may be empty)
+static Bool s_liveObserverKickExisting = FALSE;	// replace this account's session on that match
 
 // Records the intent only. doLiveObserverGameStart() blocks waiting for the relay's HEADER, so it
 // must not run while another screen is up; the pump fires it once the shell has settled.
 void StartLiveObserverSession(const AsciiString& lobbyId,
 	const AsciiString& password, const AsciiString& displayName, Int delaySeconds,
-	const AsciiString& matchId)
+	const AsciiString& matchId, Bool kickExisting)
 {
 	if (lobbyId.isEmpty())
 		return;
@@ -87,10 +91,12 @@ void StartLiveObserverSession(const AsciiString& lobbyId,
 	s_liveObserverDisplayName = displayName;
 	s_liveObserverDelaySeconds = delaySeconds;
 	s_liveObserverMatchId = matchId;
+	s_liveObserverKickExisting = kickExisting;
 	startLiveObserverGame = TRUE;
 
-	liveObserverLog("StartLiveObserverSession: queued lobby %s match %s\n", lobbyId.str(),
-		matchId.isEmpty() ? "(unspecified)" : matchId.str());
+	liveObserverLog("StartLiveObserverSession: queued lobby %s match %s%s\n", lobbyId.str(),
+		matchId.isEmpty() ? "(unspecified)" : matchId.str(),
+		kickExisting ? " (taking over this account's session)" : "");
 }
 
 // The join splits into a non-blocking connect and a playback start. The wait between them, for
@@ -117,6 +123,8 @@ void CancelLiveObserverPendingSession(void)
 	s_observerJoinPhase = kObserverJoinIdle;
 	startLiveObserverGame = FALSE;
 	m_liveObserverStartLobbyId.clear();
+
+	s_liveObserverKickExisting = FALSE;
 
 	// A cancelled session must not leak its password into the next join.
 	s_liveObserverPassword.clear();
@@ -154,7 +162,7 @@ static Bool doLiveObserverConnect(void)
 	liveObserverLog("doLiveObserverConnect: connecting to relay for lobby %s\n",
 		m_liveObserverStartLobbyId.str());
 	TheLiveObserver->connect(m_liveObserverStartLobbyId, s_liveObserverPassword.str(),
-		s_liveObserverDelaySeconds, s_liveObserverMatchId);
+		s_liveObserverDelaySeconds, s_liveObserverMatchId, s_liveObserverKickExisting);
 	return TRUE;
 }
 
@@ -247,6 +255,39 @@ Bool LiveObserverStartPendingSession(void)
 		return FALSE;
 	}
 
+	// This account already watches this match, somewhere else. Only the player can say whether
+	// that other connection may be dropped, and the answer decides the retry: with kick_existing
+	// the relay closes it and hands this one the session.
+	if (TheLiveObserver->isDuplicateSession())
+	{
+		const std::string since = TheLiveObserver->getDuplicateSince();
+		const std::string client = TheLiveObserver->getDuplicateClient();
+
+		liveObserverLog("LiveObserverStartPendingSession: duplicate session for lobby %s "
+			"(since=%s client=%s), asking whether to take it over\n",
+			m_liveObserverStartLobbyId.str(), since.empty() ? "?" : since.c_str(),
+			client.empty() ? "?" : client.c_str());
+
+		liveObserverEndSession();
+		s_observerJoinPhase = kObserverJoinIdle;
+		startLiveObserverGame = FALSE;
+
+		liveWatchPromptTakeOver(since, client, []()
+			{
+				// Re-queue the same watch; the statics still name the game, the password and the
+				// match, so the retry is the same question with the takeover flag set.
+				const AsciiString lobbyId = m_liveObserverStartLobbyId;
+				const AsciiString password = s_liveObserverPassword;
+				const AsciiString displayName = s_liveObserverDisplayName;
+				const AsciiString matchId = s_liveObserverMatchId;
+				const Int delaySeconds = s_liveObserverDelaySeconds;
+
+				StartLiveObserverSession(lobbyId, password, displayName, delaySeconds, matchId, TRUE);
+			});
+
+		return FALSE;
+	}
+
 	if (timeGetTime() > TheLiveObserver->getJoinDeadlineMs())
 	{
 		liveObserverLog("LiveObserverStartPendingSession: timed out waiting for a playable file - abandoning the join "
@@ -299,6 +340,14 @@ namespace
 			case EGencastAttempt::WrongPassword:
 				return WatchPasswordVerdict::WrongPassword;
 
+			// Not a password answer: the password was accepted, but this account already has a
+			// session on this match, so no new one was issued. That is not a rejection the player
+			// can fix by typing again, and it is not a reason to refuse the screen either - the
+			// join that follows is the moment the takeover question belongs, because only there
+			// is there a session of the player's own to keep.
+			case EGencastAttempt::Duplicate:
+				return WatchPasswordVerdict::Accepted;
+
 			case EGencastAttempt::NotFound:
 				// See above: the password is tested before liveness, so this is not a rejection.
 				return WatchPasswordVerdict::AcceptedNotLive;
@@ -310,14 +359,18 @@ namespace
 		}
 
 		// Failed covers every status the transport does not name: 410 is a lobby the relay has
-		// already dropped, 403 is a relay with direct watch switched off, 400 a malformed request,
-		// and anything else is a refusal no password can fix.
+		// already dropped, 400 a malformed request, and anything else is a refusal no password
+		// can fix.
 		switch (attempt.httpStatus)
 		{
 			case 410:
 				return WatchPasswordVerdict::Gone;
 
 			case 403:
+				// Wrong watch group: the account is not allowed to see this game at all, which
+				// the player needs told apart from a wrong password.
+				return WatchPasswordVerdict::NotInWatchGroup;
+
 			case 400:
 				return WatchPasswordVerdict::Unwatchable;
 
@@ -330,7 +383,7 @@ namespace
 	}
 
 	void watchPasswordCheckThread(std::string lobbyId, std::string password, std::string matchId,
-		UnsignedInt epoch)
+		uint64_t watcherId, UnsignedInt epoch)
 	{
 		WatchPasswordVerdict verdict = WatchPasswordVerdict::Unreachable;
 
@@ -346,10 +399,11 @@ namespace
 		}
 		else
 		{
-			// The same join the watch itself will make, match id included: probing another game
-			// of that lobby would answer for a stream this player never asked for.
+			// The same join the watch itself will make, match id and watcher id included: probing
+			// another game of that lobby (or another account) would answer for a session this
+			// player never asked for.
 			const GencastAttemptResult attempt =
-				transport->AttemptWatchSession(lobbyId, password, matchId);
+				transport->AttemptWatchSession(lobbyId, password, matchId, watcherId, false);
 			verdict = classifyWatchPasswordAnswer(attempt);
 		}
 
@@ -407,12 +461,29 @@ void liveWatchValidatePassword(const AsciiString& lobbyId, const AsciiString& pa
 		s_passwordGateDone = std::move(done);
 	}
 
-	liveObserverLog("liveWatchPasswordGate: lobby=%s asking the relay\n", lobbyId.str());
+	// The account the probe is for, read here: every join carries a watcher id, and GO's auth
+	// interface belongs to the main thread, not to the worker below.
+	uint64_t watcherId = 0;
+	NGMP_OnlineServices_AuthInterface* auth =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+
+	if (auth != nullptr)
+	{
+		const int64_t userId = auth->GetUserID();
+
+		if (userId > 0)
+		{
+			watcherId = (uint64_t)userId;
+		}
+	}
+
+	liveObserverLog("liveWatchPasswordGate: lobby=%s asking the relay (watcher=%llu)\n",
+		lobbyId.str(), (unsigned long long)watcherId);
 
 	try
 	{
 		std::thread(watchPasswordCheckThread, std::string(lobbyId.str()),
-			std::string(password.str()), std::string(matchId.str()), epoch).detach();
+			std::string(password.str()), std::string(matchId.str()), watcherId, epoch).detach();
 	}
 	catch (...)
 	{
@@ -465,6 +536,57 @@ void CancelLiveWatchPasswordCheck(void)
 	s_passwordGateRunning = FALSE;
 	s_passwordGateAnswered = FALSE;
 	s_passwordGateDone = nullptr;
+}
+
+// ============================================================================
+// The takeover question
+// ============================================================================
+//
+// Message boxes take a bare function pointer for their buttons, so the continuation has to
+// outlive the call that raises the box. One at a time, like the boxes themselves.
+static std::function<void()> s_takeOverConfirm;
+
+static void onTakeOverConfirmed()
+{
+	std::function<void()> confirmed = std::move(s_takeOverConfirm);
+	s_takeOverConfirm = nullptr;
+
+	if (confirmed)
+		confirmed();
+}
+
+void liveWatchPromptTakeOver(const std::string& since, const std::string& client,
+	std::function<void()> onConfirm)
+{
+	s_takeOverConfirm = std::move(onConfirm);
+
+	// The two facts the relay reported, so the player can recognise the other connection: when it
+	// started and which client it came from. Either may be missing (an older relay), and then the
+	// wording stays general rather than printing an empty bracket.
+	UnicodeString when;
+	UnicodeString from;
+	when.translate(AsciiString(since.empty() ? "?" : since.c_str()));
+	from.translate(AsciiString(client.empty() ? "?" : client.c_str()));
+
+	UnicodeString body;
+
+	if (since.empty() && client.empty())
+	{
+		body.format(L"This account is already watching this game.\n\n"
+			L"Disconnect that connection and watch here instead?\n\n"
+			L"Only do this if the account is yours. If you did not start that other connection, "
+			L"someone else is using your account to watch - disconnect it and change your password.");
+	}
+	else
+	{
+		body.format(L"This account is already watching this game (since %ls, client %ls).\n\n"
+			L"Disconnect that connection and watch here instead?\n\n"
+			L"Only do this if the account is yours. If you did not start that other connection, "
+			L"someone else is using your account to watch - disconnect it and change your password.",
+			when.str(), from.str());
+	}
+
+	MessageBoxYesNo(UnicodeString(L"Already watching"), body, onTakeOverConfirmed, nullptr);
 }
 
 #endif // GENERALS_ONLINE

@@ -445,7 +445,23 @@ void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
 
 	regJson += ",\"lobbyid\":\"" + liveStreamJsonEscape(registration.lobbyId.str()) + "\"";
 	regJson += ",\"player_name\":\"" + liveStreamJsonEscape(registration.playerName.str()) + "\"";
-	regJson += registration.canStream ? ",\"can_stream\":true" : ",\"can_stream\":false";
+
+	// can_stream is no longer this client's claim: the relay derives the right from its own player
+	// record and refuses a stream the player was not granted. What goes out here is the relay's own
+	// last answer - the field is kept because the frame carries it, not because it grants anything,
+	// so a client can no longer give itself permission by asserting it. Fail closed: an unanswered
+	// question is a false, never the local preference.
+	const Bool relayGrantsStreaming = GencastMayStreamCurrentLobby();
+
+	if (relayGrantsStreaming != registration.canStream)
+	{
+		liveStreamLog("LiveStreamer::registerForGame lobbyId=%s local canStream=%d but the relay "
+			"says %d - sending the relay's answer\n",
+			registration.lobbyId.str(), (int)registration.canStream, (int)relayGrantsStreaming);
+	}
+
+	regJson += relayGrantsStreaming ? ",\"can_stream\":true" : ",\"can_stream\":false";
+
 	// is_host is sent for the relay's logs only. It no longer grants anything: the relay
 	// compares our stream token's user against the owner GO recorded for the session, so a
 	// client cannot claim host authority by asserting it here.
@@ -943,6 +959,23 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 
 		transport->SetAnnounceContext(playerId, userId, displayName, mapName);
 
+		// Before announcing anything: the relay decides who may stream, and this is the last place
+		// where "not granted" can still keep the request off the wire. Fail closed - an unasked,
+		// unanswered or refused question all mean no announce.
+		if (!GencastQueryStreamPermissionNow())
+		{
+			liveStreamLog("LiveStreamer::requestStreamUrl lobby=%s refused: the relay has not "
+				"enabled streaming for this account on this match (reason=%s)\n",
+				m_lobbyId.str(), GencastStreamPermissionReason().c_str());
+
+			NetworkLog(ELogVerbosity::LOG_RELEASE,
+				"[GENCAST] stream not started lobby=%s: no stream permission (%s)",
+				m_lobbyId.str(), GencastStreamPermissionReason().c_str());
+
+			delete transport;
+			return false;
+		}
+
 		std::string streamUrl;
 		bool ok = false;
 
@@ -966,6 +999,11 @@ bool LiveStreamer::requestStreamUrl(AsciiString& outUrl)
 
 		if (!ok || streamUrl.empty())
 		{
+			// Ask again: a refusal is exactly the moment the reason for it changed - the admin
+			// revoked the right, or the match's pool closed - and the cached answer is what the
+			// lobby's switch reads next time.
+			GencastRefreshStreamPermission();
+
 			return false;
 		}
 

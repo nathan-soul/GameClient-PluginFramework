@@ -28,6 +28,7 @@
 #include "Common/AsciiString.h"
 #include "Common/GameCommon.h"
 #include "Common/UnicodeString.h"
+#include <cstdint>
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -55,12 +56,23 @@ public:
 	/// expectedDelaySeconds (-1 = unknown) pre-seeds the countdown until the ticket or ROLE
 	/// pins the real value. matchId names which match of that lobby to watch and is empty when
 	/// the caller has none: the relay then picks the newest game that has not ended.
+	///
+	/// kickExisting asks the relay to drop a session this account already has on that match. Only
+	/// ever true for the retry after the player confirmed the takeover in the dialog.
 	void connect(const AsciiString& lobbyId, const std::string& password = std::string(),
-		Int expectedDelaySeconds = -1, const AsciiString& matchId = AsciiString::TheEmptyString);
+		Int expectedDelaySeconds = -1, const AsciiString& matchId = AsciiString::TheEmptyString,
+		Bool kickExisting = FALSE);
 
 	/// GO answered the ticket request with 401: the stream is password protected and the password
 	/// was missing or wrong. The join pump re-prompts instead of waiting out the retry window.
 	Bool isPasswordRejected() const { return m_passwordRejected.load(); }
+
+	/// The relay answered 409: this account already watches this match, so no session was issued.
+	/// The join pump raises the takeover question and, if the player agrees, reconnects with
+	/// kickExisting. Read together with GetDuplicateSince/Client, which say what to name.
+	Bool isDuplicateSession() const { return m_duplicateSession.load(); }
+	std::string getDuplicateSince() const;
+	std::string getDuplicateClient() const;
 
 	/// Returns true once the HEADER has been received and playback can start.
 	Bool isReady() const { return m_headerReceived.load(); }
@@ -499,6 +511,21 @@ private:
 	std::string m_password;
 	std::atomic<Bool> m_passwordRejected{ FALSE };
 
+	/// The GO user id every join is made for, resolved on the main thread when connect() runs:
+	/// the network thread must not go looking for GO's interfaces.
+	uint64_t m_watcherUserId{ 0 };
+
+	/// Set when the player already agreed to take over a session this account has on this match
+	/// (see isDuplicateSession()). Read by the network thread on the one join it makes.
+	bool m_kickExisting{ false };
+
+	/// The relay answered 409: this account is already watching this match. Written by the
+	/// network thread, read by the join pump, which is what raises the takeover question.
+	std::atomic<Bool> m_duplicateSession{ FALSE };
+	mutable std::mutex m_duplicateMutex;
+	std::string m_duplicateSince;
+	std::string m_duplicateClient;
+
 	File* m_liveFile;
 	AsciiString m_liveFilePath;
 	AsciiString m_liveFilename;   // e.g. "996C586F_live.rep"
@@ -525,6 +552,14 @@ void liveObserverEndSession(void);
 /// (WOLGameSetupMenuInit / MainMenuInit), which then return the player to the Watch Live
 /// browser instead of the main menu. An aborted join (no game ran) must not set it.
 Bool LiveObserverConsumeReturnedFromGame(void);
+
+/// One-shot "the relay closed this session because another client took the account over" latch.
+///
+/// Set the moment that notice arrives, before the session winds down, and consumed by the screen
+/// the player lands on afterwards - which is the only place a message box may be raised from.
+/// The point of it is the alarm: the legitimate viewer has to learn that somebody else is
+/// watching with their account, not just that the stream stopped.
+Bool LiveObserverConsumeTakenOver(void);
 
 /// Called from GameLogic::clearGameData(), the one point every game-end path converges on.
 ///

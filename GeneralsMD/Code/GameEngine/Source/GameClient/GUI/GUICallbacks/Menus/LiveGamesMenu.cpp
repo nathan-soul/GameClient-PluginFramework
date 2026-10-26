@@ -665,6 +665,19 @@ void LiveGamesMenuUpdate(void)
 	// the session over. Nothing below runs on another screen's behalf.
 	liveWatchPumpPasswordCheck();
 
+	// A watch that ended because another client took the account over. This is the screen the
+	// player lands on afterwards - a live game's end re-pushes this browser (MainMenuInit) - so
+	// it is where the alarm belongs: the legitimate viewer has to learn that somebody else is
+	// watching with their account, not merely that the stream stopped. The latch clears itself,
+	// so the box appears once.
+	if (LiveObserverConsumeTakenOver())
+	{
+		MessageBoxOk(UnicodeString(L"Watch session taken over"),
+			UnicodeString(L"Another client started watching this game with your account, so this "
+				L"session was closed.\n\nIf that was not you, someone else is using your account - "
+				L"change your password."), nullptr);
+	}
+
 	// The relay fetch runs on its own thread, so collect its result here rather than via
 	// a callback - nothing off the main thread may touch gadget state.
 	AsciiString body;
