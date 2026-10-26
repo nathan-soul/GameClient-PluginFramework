@@ -958,7 +958,9 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 	static bool s_feedAsked = false;
 	static std::string s_feedPassword;
 
-	std::thread([id]()
+	const std::string watchedPassword(password.str());
+
+	std::thread([id, watchedPassword]()
 	{
 		GencastLobbyStreamState answer;
 
@@ -996,8 +998,6 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 				// from the relay's pregame feed. It needs a session, which the join hands out for a
 				// lobby that has not started; a lobby whose group wants a password answers 401 here
 				// (the password prompt comes later, at watch time) and the list above stands alone.
-				const std::string watchedPassword(password.str());
-
 				// A new password (or a new lobby) is a new question: the previous refusal was about
 				// the credential, and holding the "already asked" flag would keep the preview shut
 				// after the viewer typed it.
