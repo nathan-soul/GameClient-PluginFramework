@@ -908,6 +908,7 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamS
 	static std::string s_feedLobby;
 	static std::string s_feedUrl;
 	static long long s_feedSince = 0;
+	static bool s_feedAsked = false;
 
 	std::thread([id]()
 	{
@@ -951,10 +952,15 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamS
 				{
 					s_feedUrl.clear();
 					s_feedSince = 0;
+					s_feedAsked = false;
 				}
 
-				if (s_feedUrl.empty())
+				// Once per lobby, not once per probe: the answer cannot change without a password
+				// the client does not have yet, and asking every second put a 401 in the relay's
+				// log for every frame of the lobby view.
+				if (s_feedUrl.empty() && !s_feedAsked)
 				{
+					s_feedAsked = true;
 					uint64_t watcherId = 0;
 					NGMP_OnlineServices_AuthInterface* auth =
 						NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
@@ -1001,6 +1007,7 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamS
 					answer.lobbyName = events.lobbyName;
 					answer.delaySeconds = events.delaySeconds;
 					answer.startsInSeconds = events.startsInSeconds;
+					answer.slots = events.slots;
 					answer.chat = events.chat;
 
 					if (events.live)

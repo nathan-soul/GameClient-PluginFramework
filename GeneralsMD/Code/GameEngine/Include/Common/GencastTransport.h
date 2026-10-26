@@ -78,6 +78,17 @@ struct GencastLobbyChat
 	long long atUnixMs = 0;
 };
 
+/// One seat of the host's lobby, as the announcement reported it. `state` is the relay's spelling:
+/// "open", "closed", "player", "easy_ai", "medium_ai", "brutal_ai".
+struct GencastLobbySlot
+{
+	int slotIndex = 0;
+	std::string state;
+	std::string displayName;
+	bool ready = false;
+	bool isAi = false;
+};
+
 /// One answer of the pregame feed. Everything the lobby view needs to look like the host's own
 /// lobby: the phase, the countdown, the title, the watch delay, and the chat since the last answer.
 struct GencastPregameEvents
@@ -88,6 +99,7 @@ struct GencastPregameEvents
 	std::string lobbyName;
 	int delaySeconds = -1;
 	int startsInSeconds = -1;
+	std::vector<GencastLobbySlot> slots;
 	std::vector<GencastLobbyChat> chat;
 	long long next = 0;
 };
@@ -392,6 +404,9 @@ struct GencastLobbyStreamState
 	std::string lobbyName;              ///< the host's lobby title, empty when never said
 	int delaySeconds = -1;              ///< the lobby's minimum watch delay, -1 when never said
 	int startsInSeconds = -1;           ///< seconds until playback, -1 when not live
+
+	/// The host's seats, when the answer came from the feed. Empty for a lobby-list answer.
+	std::vector<GencastLobbySlot> slots;
 
 	/// Chat lines that arrived since the previous answer, oldest first. Drained by the view.
 	std::vector<GencastLobbyChat> chat;

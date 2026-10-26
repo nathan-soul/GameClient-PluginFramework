@@ -830,6 +830,26 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 					out.startsInSeconds = -1;
 				}
 
+				out.slots.clear();
+
+				if (snapshot.contains("slots") && snapshot["slots"].is_array())
+				{
+					for (const nlohmann::json& slot : snapshot["slots"])
+					{
+						GencastLobbySlot parsed;
+						parsed.slotIndex = slot.value("slot_index", -1);
+						parsed.state = slot.value("state", std::string("open"));
+						parsed.displayName = slot.value("display_name", std::string());
+						parsed.ready = slot.value("ready", false);
+						parsed.isAi = slot.value("is_ai", false);
+
+						if (parsed.slotIndex >= 0)
+						{
+							out.slots.push_back(parsed);
+						}
+					}
+				}
+
 				out.chat.clear();
 
 				if (body.contains("chat") && body["chat"].is_array())

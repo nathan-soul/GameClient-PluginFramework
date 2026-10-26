@@ -120,6 +120,8 @@ static Bool s_streamLivePending = FALSE;
 // What the relay feed has already told this view, so a status line is shown once rather than on
 // every probe that repeats it.
 static int s_relayDelayShown = -2;
+// The board the feed last described, so the slots are rebuilt on a change and not on every probe.
+static std::string s_feedSlotSignature;
 static int s_relayStartsInShown = -2;	// stream-live arrived mid-countdown; join at 0
 static Bool s_lobbyGone = FALSE;
 static UnsignedInt s_lobbyGoneAtMs = 0;
@@ -173,6 +175,7 @@ static Int s_slotSides[MAX_OBSERVER_SLOTS];		// player template ids, -1 = none
 static Int s_slotColors[MAX_OBSERVER_SLOTS];		// color ids, -1 = none
 static Int s_slotTeams[MAX_OBSERVER_SLOTS];		// team numbers, -1 = none
 static Int s_slotStartPos[MAX_OBSERVER_SLOTS];	// start positions, -1 = none
+static Bool s_slotReady[MAX_OBSERVER_SLOTS];	// the player in this seat pressed Ready
 static Int s_startingCash = -1;
 static Bool s_trackStats = FALSE;
 static Bool s_vanillaTeams = FALSE;
@@ -632,7 +635,16 @@ static void renderLobby(void)
 			GadgetComboBoxReset(s_slotCombos[i]);
 			if (!s_slotNames[i].isEmpty())
 			{
-				GadgetComboBoxAddEntry(s_slotCombos[i], s_slotNames[i], GameMakeColor(255, 255, 255, 255));
+				// The ready mark rides the label: the stock lobby draws it as an icon beside the name,
+				// and this view has no gadget for that, so the tick goes where a viewer will see it.
+				UnicodeString label = s_slotNames[i];
+
+				if (s_slotReady[i])
+				{
+					label.concat(UnicodeString(L" ✓"));
+				}
+
+				GadgetComboBoxAddEntry(s_slotCombos[i], label, GameMakeColor(255, 255, 255, 255));
 				GadgetComboBoxSetSelectedPos(s_slotCombos[i], 0);
 			}
 		}
@@ -781,6 +793,7 @@ static void applyLobbyFetch(Bool success, Int statusCode, const AsciiString& bod
 			s_slotTeams[i] = -1;
 			s_slotStartPos[i] = -1;
 			s_slotUserIds[i] = -1;
+			s_slotReady[i] = FALSE;
 		}
 
 		const nlohmann::json* members = nullptr;
@@ -824,6 +837,10 @@ static void applyLobbyFetch(Bool success, Int statusCode, const AsciiString& bod
 						jsonGetIntFlexible(member, "Color", "color", s_slotColors[slotIndex]);
 						jsonGetIntFlexible(member, "Team", "team", s_slotTeams[slotIndex]);
 						jsonGetIntFlexible(member, "StartingPosition", "startingPosition", s_slotStartPos[slotIndex]);
+
+						Bool ready = FALSE;
+						jsonGetBoolFlexible(member, "Ready", "ready", ready);
+						s_slotReady[slotIndex] = ready;
 					}
 					break;
 				case 2:	// SLOT_EASY_AI
@@ -1144,6 +1161,84 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 					UnicodeString notice;
 					notice.format(L"Stream starts in %ds", relayState.startsInSeconds);
 					observerChat(notice, GameMakeColor(255, 194, 15, 255));
+				}
+
+				// The host's seats, seat by seat. This is the only slot data that exists in
+				// direct mode: the view's other source is GET /Lobby/{id}, which asks GO for a
+				// lobby a watcher never joined. Rebuilt only when the board actually changes —
+				// the combos are reset by renderLobby(), and doing that every second would fight
+				// the viewer's own selection.
+				if (!relayState.slots.empty())
+				{
+					std::string signature;
+
+					for (const GencastLobbySlot& slot : relayState.slots)
+					{
+						signature += std::to_string(slot.slotIndex) + ":" + slot.state + ":" +
+							slot.displayName + ":" + (slot.ready ? "1" : "0") + ";";
+					}
+
+					if (signature != s_feedSlotSignature)
+					{
+						s_feedSlotSignature = signature;
+
+						for (Int i = 0; i < MAX_OBSERVER_SLOTS; ++i)
+						{
+							s_slotNames[i].clear();
+							s_slotOccupied[i] = FALSE;
+							s_slotReady[i] = FALSE;
+							s_slotStates[i] = -1;
+							s_slotUserIds[i] = -1;
+						}
+
+						for (const GencastLobbySlot& slot : relayState.slots)
+						{
+							const Int index = slot.slotIndex;
+
+							if (index < 0 || index >= MAX_OBSERVER_SLOTS)
+							{
+								continue;
+							}
+
+							if (slot.state == "player")
+							{
+								if (!slot.displayName.empty())
+								{
+									s_slotNames[index] = from_utf8(slot.displayName).c_str();
+								}
+
+								s_slotOccupied[index] = TRUE;
+								s_slotReady[index] = slot.ready ? TRUE : FALSE;
+								s_slotStates[index] = SLOT_PLAYER;
+							}
+							else if (slot.state == "easy_ai" || slot.state == "medium_ai" ||
+								slot.state == "brutal_ai")
+							{
+								const Bool easy = slot.state == "easy_ai";
+								const Bool medium = slot.state == "medium_ai";
+								s_slotNames[index] = TheGameText->fetch(
+									easy ? "GUI:EasyAI" : (medium ? "GUI:MediumAI" : "GUI:HardAI"));
+								s_slotOccupied[index] = TRUE;
+								s_slotStates[index] = easy ? SLOT_EASY_AI : (medium ? SLOT_MED_AI : SLOT_BRUTAL_AI);
+							}
+							else if (slot.state == "closed")
+							{
+								s_slotNames[index] = TheGameText->fetch("GUI:Closed");
+								s_slotStates[index] = SLOT_CLOSED;
+							}
+						}
+
+						for (Int i = 0; i < MAX_OBSERVER_SLOTS; ++i)
+						{
+							if (s_slotNames[i].isEmpty())
+							{
+								s_slotNames[i] = TheGameText->fetch("GUI:Open");
+								s_slotStates[i] = SLOT_OPEN;
+							}
+						}
+
+						renderLobby();
+					}
 				}
 
 				for (const GencastLobbyChat& line : relayState.chat)
