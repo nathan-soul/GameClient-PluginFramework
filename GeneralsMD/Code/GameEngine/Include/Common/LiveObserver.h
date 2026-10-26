@@ -366,6 +366,16 @@ private:
 	// instead of freezing on the last frame forever.
 	enum { LIVE_RELAY_WATCHDOG_MS = 120000 };
 
+	/// How long the *stream* may be silent before the watcher calls it over.
+	///
+	/// The relay watchdog above keys off any frame at all, and the relay keeps sending
+	/// keepalive pings whether or not the streamer is producing anything - so it never fired
+	/// in the case it was written for. This one only counts stream data (header, patch, body):
+	/// when a host surrenders with spectators disabled, or its client stops capturing, the
+	/// pings continue and the picture stops, which is exactly what this measures. A watcher
+	/// then leaves on the normal END path within a few seconds instead of freezing for ever.
+	enum { LIVE_STREAM_IDLE_MS = 12000 };
+
 	// ---- Rate-matched playback -----------------------------------------------------------
 	//
 	// A network match runs at the rate its slowest peer sustains, so the streamer's simulation
@@ -479,7 +489,12 @@ private:
 
 	// Timestamp of the last websocket frame of any kind, including the relay's ~20 s keepalive
 	// pings. Feeds the relay watchdog (LIVE_RELAY_WATCHDOG_MS).
+	//
+	// m_lastMediaMs is the stream-only clock: it moves when the host's bytes arrive, never on a
+	// ping. LIVE_STREAM_IDLE_MS is measured against it.
 	std::atomic<UnsignedInt> m_lastFrameReceivedMs{ 0 };
+	/// Stream data only (header, patch, body) - never a keepalive ping. See LIVE_STREAM_IDLE_MS.
+	std::atomic<UnsignedInt> m_lastMediaMs{ 0 };
 
 	// Parse-cursor state. Owned exclusively by the network thread - no locking.
 	std::vector<unsigned char> m_parseTail;   // bytes after the last complete record

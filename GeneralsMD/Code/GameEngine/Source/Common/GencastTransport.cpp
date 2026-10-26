@@ -956,6 +956,8 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 	static std::string s_feedUrl;
 	static long long s_feedSince = 0;
 	static bool s_feedAsked = false;
+	static bool s_feedShapeLogged = false;
+	static bool s_feedFailureLogged = false;
 	static std::string s_feedPassword;
 
 	const std::string watchedPassword(password.str());
@@ -1006,6 +1008,8 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 					s_feedUrl.clear();
 					s_feedSince = 0;
 					s_feedAsked = false;
+					s_feedShapeLogged = false;
+					s_feedFailureLogged = false;
 					s_feedPassword = watchedPassword;
 					s_feedLobby = id;
 					answer.passwordRequired = false;
@@ -1038,7 +1042,10 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 
 						if (joined.kind == EGencastAttempt::Success && !joined.pregameUrl.empty())
 						{
-							s_feedUrl = joined.pregameUrl;
+							// The polling lane the relay named. Falling back to the socket URL only
+						// keeps an older relay's answer from being fetched as a socket path - a
+						// fetch that was refused silently, which made the whole lobby view empty.
+						s_feedUrl = !joined.eventsUrl.empty() ? joined.eventsUrl : joined.pregameUrl;
 							s_feedSince = 0;
 
 							GencastDebugLog("gencast: pregame feed for lobby=%s at %s",
@@ -1059,8 +1066,18 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 
 				GencastPregameEvents events;
 
-				if (!s_feedUrl.empty() && s_feedLobby == id &&
-					transport->FetchPregameEvents(s_feedUrl, s_feedSince, events))
+				const bool fetched = !s_feedUrl.empty() && s_feedLobby == id &&
+					transport->FetchPregameEvents(s_feedUrl, s_feedSince, events);
+
+				if (!fetched && !s_feedUrl.empty() && !s_feedFailureLogged)
+				{
+					// Silent failures are what made the last three reports unreadable: the fetch
+					// was pointed at a socket route and the view just showed nothing.
+					s_feedFailureLogged = true;
+					GencastDebugLog("gencast: pregame feed refused lobby=%s url=%s", id.c_str(), s_feedUrl.c_str());
+				}
+
+				if (fetched)
 				{
 					answer.fromFeed = true;
 					answer.lobbyName = events.lobbyName;
@@ -1078,6 +1095,14 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 					{
 						answer.countdownStarted = true;
 						answer.countdownEndsAtUnixMs = events.countdownEndsAtUnixMs;
+					}
+
+					if (!s_feedShapeLogged)
+					{
+						s_feedShapeLogged = true;
+						GencastDebugLog("gencast: pregame feed lobby=%s phase=%s slots=%d chat=%d next=%lld title=%s",
+							id.c_str(), events.live ? "live" : "pregame", (int)events.slots.size(),
+							(int)events.chat.size(), events.next, events.lobbyName.c_str());
 					}
 
 					s_feedSince = events.next;

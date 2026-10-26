@@ -116,6 +116,13 @@ struct GencastWatchSession
 	/// The polling feed of a lobby that has not started yet (/direct/pregame/{id}/events). Non-empty
 	/// exactly when the join named a pregame session instead of a watch session.
 	std::string pregameUrl;
+
+	/// The polling lane of that feed (`/direct/pregame/{id}/events`), when the relay names it.
+	///
+	/// A separate field rather than a suffix because that is exactly the bug this replaces: the
+	/// client appended its cursor to `pregame_url` — the socket route — and every fetch came back
+	/// refused, with nothing logged. Empty from an older relay.
+	std::string eventsUrl;
 	/// False when the relay answered with a pregame session: nothing to watch yet, and the same
 	/// session becomes the watch session when the stream attaches.
 	bool live = true;

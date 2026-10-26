@@ -1053,6 +1053,15 @@ void GameEngine::update()
 				{
 					s_streamOverSeenMs = 0;
 					liveObserverLog("LiveObserver: stream ended mid-match - leaving the observer view\n");
+
+					// Say why before the view goes: a watcher whose stream simply stopped had no
+					// way to tell a pause from an end, and the picture it left behind read as a
+					// frozen game.
+					if (TheInGameUI != nullptr)
+					{
+						TheInGameUI->message(UnicodeString(L"The stream has ended - the host is no longer sending"));
+					}
+
 					TheGameLogic->clearGameData();
 				}
 			}

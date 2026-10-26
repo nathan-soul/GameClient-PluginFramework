@@ -1556,6 +1556,7 @@ void LiveObserver::close()
 	m_connected.store(false);
 	m_headerReceived.store(false);
 	m_streamEnded.store(false);
+	m_lastMediaMs.store(timeGetTime());
 }
 
 std::string LiveObserver::getDuplicateSince() const
@@ -2221,6 +2222,13 @@ LiveObserver::WsRecvResult LiveObserver::wsRecv(std::vector<char>& outBuffer)
 
 	// Only binary payloads belong in the reassembly buffer: a PING/PONG/TEXT/CLOSE payload
 	// appended into the byte stream misparses everything after it.
+	if (meta == nullptr || (meta->flags & CURLWS_BINARY) != 0)
+	{
+		// Real stream data. The idle watchdog measures this and not m_lastFrameReceivedMs,
+		// because the relay keeps pinging a streamer that has stopped producing frames.
+		m_lastMediaMs.store(timeGetTime());
+	}
+
 	if (meta != nullptr && (meta->flags & CURLWS_BINARY) == 0)
 	{
 		outBuffer.clear();
@@ -2471,6 +2479,20 @@ void LiveObserver::networkThreadFunc()
 		// the same way a stream END does, instead of freezing on the last frame forever. Gated on
 		// the header, because before it (the join, the broadcast-delay hold) the relay may
 		// legitimately be silent for longer than the threshold.
+		// The stream stopped, the connection did not: the relay is still pinging, the host is not
+		// sending frames (defeat with spectators disabled, a client that stopped capturing, a
+		// hung renderer). Ending here is what puts the watcher on the normal END path - a
+		// message and a way out - instead of leaving the last frame on screen for ever.
+		if (m_headerReceived.load() && !m_streamEnded.load()
+			&& m_lastMediaMs.load() != 0
+			&& (timeGetTime() - m_lastMediaMs.load()) > (UnsignedInt)LIVE_STREAM_IDLE_MS)
+		{
+			liveObserverLog("LiveObserver: no stream data for %ums while the relay is still connected - the host stopped sending, ending the session\n",
+				(unsigned)(timeGetTime() - m_lastMediaMs.load()));
+			m_streamEnded.store(true);
+			break;
+		}
+
 		if (m_headerReceived.load()
 			&& (timeGetTime() - m_lastFrameReceivedMs.load()) > (UnsignedInt)LIVE_RELAY_WATCHDOG_MS)
 		{

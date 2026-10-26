@@ -759,6 +759,7 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 				// attaches. An older relay sends neither field, which reads as "live" - the shape it
 				// has always had.
 				result.pregameUrl = body.value("pregame_url", "");
+				result.eventsUrl = body.value("events_url", "");
 				result.live = body.value("live", true);
 
 				if (!result.streamUrl.empty())
