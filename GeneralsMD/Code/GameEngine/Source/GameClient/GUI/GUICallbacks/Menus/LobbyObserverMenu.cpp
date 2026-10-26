@@ -24,7 +24,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
-#include "GameLogic/System/GameLogic.h"
+#include "GameLogic/GameLogic.h"
 
 #if defined(GENERALS_ONLINE)
 
