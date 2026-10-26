@@ -248,6 +248,20 @@ public:
 	// Failures are logged, never reported: nobody is waiting on the answer.
 	virtual void AnnounceLobby(const std::string& lobbyId, EGencastStreamState state) {}
 
+	// Direct mode: one line of lobby chat, so a watcher of a pregame lobby reads the same
+	// conversation its players do.
+	//
+	// Only the host's client sends this. It is the one client with the lobby's live
+	// transcript, and it is already the announcer the relay binds the entry to - a member
+	// forwarding the same line would post it twice. `from` is the speaker's display name and
+	// `text` the message without the "[Name] " prefix GO added, because the relay names the
+	// line itself.
+	//
+	// Fire-and-forget, sent from a worker for the same reason the announce is: the request
+	// is synchronous with a five second timeout and this is reached from the websocket tick
+	// on the game thread. A relay that is absent or older is a log line, never a dialog.
+	virtual void ForwardLobbyChat(const std::string& from, const std::string& text) {}
+
 	// Direct mode has to tell the relay who is announcing and what the lobby looks like: the
 	// relay binds that player's password to the lobby on the first announce, keyed by the
 	// Services user id. Services mode ignores all of it, because Services already knows who
@@ -300,6 +314,24 @@ GencastTransport* CreateRelayGencastTransport();
 **	announcing, in which phase, and whether anything actually changed - is in one place.
 */
 void GencastAnnounceCurrentLobby();
+
+/*
+**	Mirror one lobby chat line to the relay, when direct mode has an entry to attach it to.
+**
+**	Called from the LOBBY_CHAT_FROM_SERVER case, which every client in the lobby runs once
+**	per line. Only the host forwards: the relay keeps one announcer per entry, and the other
+**	members would post the same line again. isAnnouncement marks GO's system lines ("Observers
+**	watching: ...", the countdown ticks), which are not player chat and are left out.
+**
+**	The speaker is resolved here rather than at the call site: GO puts the name in user_id and
+**	formats the message as "[Name] text", and the relay names the line from `from`, so the body
+**	it receives must not carry the name twice.
+**
+**	No-op outside direct mode, when this client is not the lobby's host, and when nothing is
+**	left to say after the name comes off. Failures are logged, never reported: nobody waits on
+**	a chat forward.
+*/
+void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, bool isAnnouncement);
 
 /*
 **	"Nothing here belongs to us any more" and "our match is over", reported to the relay.

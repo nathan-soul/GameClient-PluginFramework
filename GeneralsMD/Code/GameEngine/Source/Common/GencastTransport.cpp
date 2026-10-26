@@ -770,6 +770,106 @@ void GencastAnnounceCurrentLobby()
 }
 
 /*
+**	One lobby chat line, mirrored so a watcher of the pregame lobby reads the same
+**	conversation its players do.
+**
+**	The relay has one entry per lobby and binds its announcer, so only the host's client
+**	forwards: it is the client with the lobby's live transcript, and a member posting the
+**	same line would put it on the entry a second time. GO's system lines are skipped as
+**	well - they are the server talking, not a player, and the relay's player-chat channel
+**	is only for people.
+**
+**	The speaker's name is resolved from the roster here rather than at the call site: GO
+**	sends the id and formats the text as "[Name] text", and the relay renders from + text,
+**	so the name comes off the body once it is known. The bracket is the fallback for a
+**	speaker who is not a member, which is how a pre-game observer's line arrives.
+*/
+void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, bool isAnnouncement)
+{
+	if (isAnnouncement)
+	{
+		return;
+	}
+
+	NGMP_OnlineServices_LobbyInterface* lobbyInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+	if (lobbyInterface == nullptr || !lobbyInterface->IsHost())
+	{
+		return;
+	}
+
+	// The same gate the announce passed: direct mode, streaming switched on, a lobby, and a
+	// seat. Without an announce there is no entry for the line to land on, and posting it
+	// would be a request the relay refuses.
+	DirectLobbyIdentity identity;
+
+	if (!ResolveDirectLobbyIdentity(identity))
+	{
+		return;
+	}
+
+	std::string from;
+	LobbyEntry& lobby = lobbyInterface->GetCurrentLobby();
+
+	for (const LobbyMemberEntry& member : lobby.members)
+	{
+		if (member.user_id == fromUserId)
+		{
+			from = member.display_name;
+			break;
+		}
+	}
+
+	std::string text = message;
+
+	if (from.empty() && text.size() > 2 && text[0] == '[')
+	{
+		const std::string::size_type close = text.find(']');
+
+		if (close != std::string::npos && close > 1)
+		{
+			from = text.substr(1, close - 1);
+		}
+	}
+
+	if (!from.empty())
+	{
+		// GO formats a member's line as "[Name] text" and, for /me, as "Name text". Both put
+		// the speaker in the body, and the relay renders `from` itself, so the name comes off
+		// before it travels. A normal line is always the bracketed one - a body that starts
+		// with the bare name can only be an action line.
+		const std::string bracketed = "[" + from + "] ";
+		const std::string action = from + " ";
+
+		if (text.rfind(bracketed, 0) == 0)
+		{
+			text.erase(0, bracketed.size());
+		}
+		else if (text.rfind(action, 0) == 0)
+		{
+			text.erase(0, action.size());
+		}
+	}
+
+	if (text.empty())
+	{
+		return;
+	}
+
+	std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+
+	if (transport == nullptr)
+	{
+		return;
+	}
+
+	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName,
+		identity.mapName);
+	transport->ForwardLobbyChat(from, text);
+}
+
+/*
 **	The leave funnel and the match end, resolved the same way the announce is.
 **
 **	Both hand the request to the transport, which sends it from a worker: these are called from

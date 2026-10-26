@@ -9,11 +9,14 @@
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 // The announce carries the lobby roster, so the transport reads the lobby the player is in.
 #include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
+// ... and the host's countdown, which is client state on the NGMP game, not on the lobby.
+#include "GameNetwork/GeneralsOnline/NGMPGame.h"
 #include "GameNetwork/GeneralsOnline/json.hpp"
 
 #include <curl/curl.h>
 
 #include <chrono>
+#include <cstdio>
 #include <mutex>
 #include <thread>
 
@@ -243,6 +246,9 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 			slot["startpos"] = member.startpos;
 			slot["display_name"] = member.display_name;
 			slot["is_ai"] = IsAiSlotState(state);
+			// Whether the player in this seat has pressed Ready. Display data for the relay's
+			// pregame lobby and its admin panel; nothing acts on it, the host starts the match.
+			slot["ready"] = member.m_bIsReady;
 			slots.push_back(slot);
 		}
 
@@ -261,6 +267,26 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
 
 		return lobby != nullptr ? lobby->GetCurrentMatchID() : 0;
+	}
+
+	/// GO's id for the lobby this client is in, as decimal text, empty when it is in none.
+	///
+	/// The announce is handed this by its callers; the chat forward is not, so it reads it here
+	/// rather than taking a lobby id it would only pass through. Same spelling as the announce
+	/// sends, because both name the same entry at the relay.
+	std::string CurrentLobbyId()
+	{
+		NGMP_OnlineServices_LobbyInterface* lobby =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+		if (lobby == nullptr || !lobby->IsInLobby())
+		{
+			return std::string();
+		}
+
+		char lobbyId[32];
+		snprintf(lobbyId, sizeof(lobbyId), "%lld", (long long)lobby->GetCurrentLobby().lobbyID);
+		return lobbyId;
 	}
 
 	class RelayGencastTransport : public GencastTransport
@@ -858,9 +884,10 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 			}
 
 			// The body is the whole of what the relay would store, so comparing it with the last
-			// one is an exact "did anything change" test: ready flags, chat and the map-name
-			// spelling of the lobby cost no request at all, while a new seat, team, colour, map or
-			// phase does. (A body carries the lobby id, so another lobby always differs.)
+			// one is an exact "did anything change" test: a readiness flag, a countdown that
+			// started or stopped, a new seat, team, colour, map or phase all cost one request,
+			// while a refresh that changes none of them costs nothing. (A body carries the lobby
+			// id, so another lobby always differs.)
 			{
 				std::scoped_lock<std::mutex> lock(s_announceMutex);
 
@@ -913,6 +940,48 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 					GencastDebugLog("gencast: lobby announce lobby=%s state=%s -> status=%ld",
 						lobbyId.c_str(), stateName.c_str(), response.status);
 				}).detach();
+		}
+
+		/// One line of lobby chat, mirrored to the relay's pregame feed.
+		///
+		/// The host's client is the only one with a lobby's live chat, and it is the client the
+		/// relay binds the entry to, so this is how a watcher reads the conversation. The body is
+		/// built here, on the caller's thread (the websocket tick, which is the game thread), and
+		/// only the finished request goes to a worker - same contract as the announce, and for the
+		/// same reason: Perform() is synchronous with a five second timeout.
+		void ForwardLobbyChat(const std::string& from, const std::string& text) override
+		{
+			const std::string lobbyId = CurrentLobbyId();
+
+			if (lobbyId.empty() || text.empty())
+			{
+				return;
+			}
+
+			nlohmann::json request;
+			request["lobby_id"] = lobbyId;
+			request["match_id"] = std::to_string(CurrentMatchId());
+			request["from"] = from;
+			// The relay has two kinds on one channel; this one only ever posts what a player
+			// typed, and marks it so a watcher's own lines stay distinguishable.
+			request["kind"] = "player";
+			request["text"] = text;
+
+			std::string body;
+
+			try
+			{
+				body = request.dump();
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				// A display name that is not valid UTF-8. Dropped rather than repaired: half a
+				// name in a chat line is worse than the line not arriving.
+				GencastDebugLog("gencast: chat lobby=%s dropped, details unencodable", lobbyId.c_str());
+				return;
+			}
+
+			PostChat(lobbyId, body);
 		}
 
 		// The direct relay has no lobby-subscription channel: the watch list is polled and the
@@ -1046,6 +1115,35 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 						pathCopy.c_str(), lobbyId.c_str(), (unsigned long long)matchId,
 						response.status);
 				}).detach();
+			}
+
+		/// POST one chat line on a worker and forget it.
+		///
+		/// Reached from the websocket tick, which is the game thread: the five second timeout
+		/// has no place in a frame. The worker holds nothing but strings, so the transport may
+		/// be deleted under it - the same contract as the announce and the lifecycle posts.
+		void PostChat(const std::string& lobbyId, const std::string& body)
+		{
+			const std::string url = BaseUrl() + "/direct/chat";
+
+			std::thread([url, lobbyId, body]()
+				{
+					HttpResponse response;
+					const bool answered = Perform(url, body.c_str(), response);
+
+					// An older relay has no chat route (404) and a missing one does not
+					// answer at all. Both are the same nothing: one log line, no retry.
+					if (!answered || response.status != 200)
+					{
+						GencastDebugLog("gencast: chat lobby=%s -> %s status=%ld",
+							lobbyId.c_str(), answered ? "refused" : "relay unreachable",
+							response.status);
+						return;
+					}
+
+					GencastDebugLog("gencast: chat lobby=%s -> status=%ld",
+						lobbyId.c_str(), response.status);
+				}).detach();
 		}
 
 		/// The /direct/announce body for the lobby as it is right now.
@@ -1095,6 +1193,26 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 			// The phase is the caller's, never assumed here: this body is sent both from the
 			// lobby (pregame) and from the streamer at match start (live).
 			request["state"] = GencastStreamStateName(state);
+
+			// The host's countdown, read from the client state that runs it rather than mirrored
+			// into a second flag: NGMPGame::StartCountdown is the one place it begins (and the
+			// place that tells Services; SendData_CountdownStarted also nudges this announce),
+			// while every cancel path - a field change, a departure, the countdown running out,
+			// START_GAME - stops it there, so the next announce carries the cleared flag with
+			// nothing left to keep in step. A live announce never carries one: the relay only
+			// shows it on a lobby that is still seating.
+			const bool countdownStarted = state == EGencastStreamState::Pregame &&
+				TheNGMPGame != nullptr && TheNGMPGame->IsCountdownStarted();
+
+			request["countdown_started"] = countdownStarted;
+
+			if (countdownStarted)
+			{
+				// The length the host's own on-screen timer counts down, not a guess: the same
+				// GetTotalCountdownDuration() WOLGameSetupMenu subtracts from the start time.
+				request["countdown_ends_at_unix_ms"] = TheNGMPGame->GetCountdownStartTime() +
+					(int64_t)TheNGMPGame->GetTotalCountdownDuration() * 1000;
+			}
 
 			try
 			{

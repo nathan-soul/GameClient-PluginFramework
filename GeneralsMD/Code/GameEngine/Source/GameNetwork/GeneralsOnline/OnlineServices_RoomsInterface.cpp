@@ -8,6 +8,7 @@
 #include "../OnlineServices_Init.h"
 #include "../HTTP/HTTPManager.h"
 #include "Common/Recorder.h"
+#include "Common/GencastTransport.h"		// direct mode: mirror lobby chat to the relay
 #include "GameClient/LobbyObserverMenu.h"	// slot lookup for colouring an observer's chat
 #include "GameNetwork/GameSpy/PeerDefs.h"
 
@@ -1435,6 +1436,14 @@ void WebSocket::Tick()
 
 										if (bParsed)
 										{
+											// Direct mode mirrors the line to the relay, so a watcher
+											// of a pregame lobby reads the same conversation its
+											// players do. The funnel decides whether this client is
+											// the one to forward it (only the host, once per line)
+											// and never throws, so it cannot cost anybody the chat
+											// line drawn below.
+											GencastForwardLobbyChat(chatData.user_id, chatData.message, chatData.announcement);
+
 											UnicodeString unicodeStr(from_utf8(chatData.message).c_str());
 
 											NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();

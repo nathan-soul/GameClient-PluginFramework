@@ -1395,6 +1395,13 @@ void WebSocket::SendData_CountdownStarted()
 	j["msg_id"] = EWebSocketMessageID::START_GAME_COUNTDOWN_STARTED;
 	std::string strBody = j.dump();
 	Send(strBody.c_str());
+
+	// Direct mode mirrors this countdown to the relay so a pregame watcher can show the same
+	// timer. The flag itself is read from the client's own countdown (NGMPGame state), so this
+	// is only the nudge that gets the announce out now instead of at the next lobby change; the
+	// clear needs no hook, because every cancel path stops that countdown and the announce that
+	// follows carries it false.
+	GencastAnnounceCurrentLobby();
 }
 
 
