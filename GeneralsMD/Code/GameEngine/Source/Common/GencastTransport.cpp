@@ -19,6 +19,10 @@
 #include <curl/curl.h>
 #include "GameNetwork/GeneralsOnline/json.hpp"
 
+/// The feed path the join named for this lobby, published for the push lane at the end of this
+/// file: the poll owns the join, the socket only needs to know where it is.
+static std::string s_pregameFeedUrl;
+
 #include <cstdio>
 #include <memory>
 #include <mutex>
@@ -1067,6 +1071,8 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 					}
 				}
 
+				s_pregameFeedUrl = s_feedUrl;
+
 				GencastPregameEvents events;
 
 				const bool fetched = !s_feedUrl.empty() && s_feedLobby == id &&
@@ -1446,12 +1452,12 @@ namespace
 	/// wss://relay/direct/pregame/{session} - the events lane's URL without its suffix.
 	std::string PregameSocketUrl()
 	{
-		if (s_feedUrl.empty())
+		if (s_pregameFeedUrl.empty())
 		{
 			return std::string();
 		}
 
-		std::string path = s_feedUrl;
+		std::string path = s_pregameFeedUrl;
 		const std::string suffix = "/events";
 
 		if (path.size() > suffix.size() &&
