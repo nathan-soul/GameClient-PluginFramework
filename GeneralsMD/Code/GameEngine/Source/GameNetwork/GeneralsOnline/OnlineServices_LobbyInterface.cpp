@@ -715,7 +715,7 @@ void NGMP_OnlineServices_LobbyInterface::SendChatMessageToCurrentLobby(UnicodeSt
 	// streamer-who-is-not-the-host with a silent lobby.
 	if (!bIsAction)
 	{
-		GencastPostOwnLobbyChat(from_utf8(strChatMsgUnicode.str()));
+		GencastPostOwnLobbyChat(to_utf8(strChatMsgUnicode.str()));
 	}
 #endif
 
