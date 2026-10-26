@@ -1,5 +1,8 @@
 #pragma once
 #include "NGMP_types.h"
+// GetDisplayNameW() calls from_utf8(), so this header has to bring its own declaration:
+// until now every includer happened to include NGMP_include.h first, which is not a contract.
+#include "NGMP_include.h"
 
 class NGMP_OnlineServices_AuthInterface
 {
