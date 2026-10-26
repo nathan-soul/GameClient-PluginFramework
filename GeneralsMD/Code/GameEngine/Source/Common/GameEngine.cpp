@@ -1062,6 +1062,15 @@ void GameEngine::update()
 						TheInGameUI->message(UnicodeString(L"The stream has ended - the host is no longer sending"));
 					}
 
+					// The shell's backdrop is a map, not the destroyed world. liveObserverEndSession()
+					// sets this too, but only after clearGameData() has run - and that gap is the
+					// grey screen a watcher sees behind the menu while it opens. Turning it on first
+					// means the shell already has something to draw when the world goes.
+					if (TheWritableGlobalData != nullptr)
+					{
+						TheWritableGlobalData->m_shellMapOn = TRUE;
+					}
+
 					TheGameLogic->clearGameData();
 				}
 			}
