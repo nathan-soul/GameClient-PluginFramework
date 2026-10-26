@@ -174,6 +174,12 @@ struct GencastAttemptResult
 	std::string wsUrl;
 	std::string sessionUrl;
 	std::string streamUrl;
+	/// Non-empty when the relay answered with a pregame session: the lobby exists but has not
+	/// started, and this is the feed to read it from. A caller that wants to watch must wait.
+	std::string pregameUrl;
+	/// False on a pregame answer; true for every answer that names a watch session, and for older
+	/// relays that send neither field.
+	bool live = true;
 	std::string errorMessage;
 	int holdSeconds = 0;
 	// Duplicate only: when the other session started and which client it came from, as the relay
