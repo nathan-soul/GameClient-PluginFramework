@@ -800,7 +800,10 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 
 			HttpResponse response;
 
-			return Perform(BaseUrl() + "/direct/chat", body.dump(), response) && response.status == 200;
+			const std::string payload = body.dump();
+
+			return Perform(BaseUrl() + "/direct/chat", payload.c_str(), response) &&
+				response.status == 200;
 		}
 
 		bool FetchPregameEvents(const std::string& eventsUrl, long long since,

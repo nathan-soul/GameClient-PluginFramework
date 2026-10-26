@@ -1518,7 +1518,8 @@ WindowMsgHandledType LobbyObserverInput(GameWindow* window, UnsignedInt msg,
 					// comes back through the feed with everyone else's.
 					if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
 					{
-						GencastPostWatcherChat(s_observerLobbyId, txtInput);
+						const std::string line = to_utf8(txtInput.str());
+						GencastPostWatcherChat(s_observerLobbyId, AsciiString(line.c_str()));
 					}
 					else
 					{
