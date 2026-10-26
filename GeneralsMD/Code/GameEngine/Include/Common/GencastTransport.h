@@ -446,6 +446,19 @@ struct GencastLobbyStreamState
 bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& password,
 	GencastLobbyStreamState& out);
 
+/// The pregame feed's push lane: the relay's WebSocket for the session the join handed out.
+///
+/// Start it once the feed URL is known (the lobby view does that when it opens) and stop it when
+/// the view closes or the stream hands off. While it is connected its frames are the truth; the
+/// poll above stays as the fallback for a relay that cannot upgrade.
+void GencastPregameSocketStart();
+void GencastPregameSocketStop();
+bool GencastPregameSocketConnected();
+
+/// Hands over the newest pushed state, with the chat lines that arrived since the last call, and
+/// returns false when nothing new arrived (the caller keeps what it already drew).
+bool GencastPregameSocketTake(GencastLobbyStreamState& out);
+
 /// Sends a watcher's own lobby line to the relay, on a worker. Direct mode only; the line comes
 /// back through the feed with the next answer, exactly like everyone else's.
 void GencastPostWatcherChat(const AsciiString& lobbyId, const AsciiString& text);

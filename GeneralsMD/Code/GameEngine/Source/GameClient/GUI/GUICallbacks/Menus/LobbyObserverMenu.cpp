@@ -187,6 +187,7 @@ static Int s_lobbyState = -1;	// ELobbyState as int; -1 = unknown
 static Bool s_isStreaming = FALSE;
 static Bool s_countdownStarted = FALSE;	// lobby JSON CountdownStarted (host's countdown)
 static Bool s_countdownKnown = FALSE;	// the JSON carried CountdownStarted at all (old GO omits it)
+static Bool s_pregameSocketStarted = FALSE;	// the push lane is open for this lobby
 // Host kill switch for observer chat. Defaults OFF here on purpose: absent on an old GO means
 // the message can never be delivered, so the box must stay dead rather than swallow input.
 // (Opposite of the server's own default, deliberately - absent-means-off is the safe read.)
@@ -1139,8 +1140,28 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 		s_phase == LobbyObserverPhase::kWaiting)
 	{
 		GencastLobbyStreamState relayState;
+		Bool haveRelayState = FALSE;
 
-		if (GencastPollLobbyStreamState(s_observerLobbyId, s_observerPassword, relayState))
+		// The relay pushes this lobby on a WebSocket; the poll is the fallback for a relay that
+		// cannot upgrade. The socket is started once the join has named the session (the first
+		// feed answer), because before that there is no URL to open.
+		if (GencastPregameSocketConnected())
+		{
+			haveRelayState = GencastPregameSocketTake(relayState) ? TRUE : FALSE;
+		}
+		else
+		{
+			haveRelayState = GencastPollLobbyStreamState(s_observerLobbyId, s_observerPassword, relayState) ? TRUE : FALSE;
+
+			if (!s_pregameSocketStarted && haveRelayState && relayState.fromFeed)
+			{
+				// A session exists now: open the push lane and let the next frame arrive on it.
+				s_pregameSocketStarted = TRUE;
+				GencastPregameSocketStart();
+			}
+		}
+
+		if (haveRelayState)
 		{
 			// The host's lobby as the relay sees it: title, watch delay and chat. Only the feed
 			// carries these in direct mode - the lobby list has no chat - so a viewer without a
@@ -1408,6 +1429,11 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 
 void LobbyObserverShutdown(WindowLayout* layout, void* userData)
 {
+	// The push lane belongs to this view: a socket left open would keep a dead lobby's frames
+	// arriving with nobody to read them, and the next lobby would open on a stale one.
+	GencastPregameSocketStop();
+	s_pregameSocketStarted = FALSE;
+
 	// The join hand-off also lands here, because the shell tears down when the game starts. By
 	// then the pending-session pump has cleared its own queue, so the cancel below only fires for
 	// a real leave or an aborted join.

@@ -17,6 +17,7 @@
 #include "GameNetwork/GeneralsOnline/NGMPGame.h"
 
 #include <curl/curl.h>
+#include <nlohmann/json.hpp>
 
 #include <cstdio>
 #include <memory>
@@ -1415,3 +1416,336 @@ void GencastRegisterWatcher()
 }
 
 #endif // GENERALS_ONLINE
+
+
+// ============================================================================
+// The pregame feed's push lane
+// ============================================================================
+
+/*
+**	The relay pushes the pregame lobby on GET /direct/pregame/{session} as a WebSocket: the same
+**	snapshot, chat, countdown and live frames the polling lane returns in one answer. The view
+**	polled at 250 ms for a while because that was cheap to write, and it read as a lobby that
+**	lagged a second behind - a five second countdown is four samples, and chat lands in lumps.
+**
+**	The socket is the lane this client should always have used: libcurl is already linked and
+**	LiveObserver drives the same calls for the match itself. The poll stays as the fallback for
+**	a relay that cannot upgrade (or a socket that never connects), so a watcher is never blind.
+*/
+
+namespace
+{
+	std::thread s_pregameThread;
+	std::atomic<bool> s_pregameRun(false);
+	std::atomic<bool> s_pregameConnected(false);
+	std::mutex s_pregameMutex;
+	GencastLobbyStreamState s_pregameState;
+	std::vector<GencastLobbyChat> s_pregameChat;
+	bool s_pregameDirty = false;
+
+	/// wss://relay/direct/pregame/{session} - the events lane's URL without its suffix.
+	std::string PregameSocketUrl()
+	{
+		if (s_feedUrl.empty())
+		{
+			return std::string();
+		}
+
+		std::string path = s_feedUrl;
+		const std::string suffix = "/events";
+
+		if (path.size() > suffix.size() &&
+			path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0)
+		{
+			path.erase(path.size() - suffix.size());
+		}
+
+		std::string base = NGMP_OnlineServicesManager::Settings.Relay_Direct_Url();
+
+		while (!base.empty() && base[base.size() - 1] == '/')
+		{
+			base.erase(base.size() - 1);
+		}
+
+		if (base.compare(0, 8, "https://") == 0)
+		{
+			base = "wss://" + base.substr(8);
+		}
+		else if (base.compare(0, 7, "http://") == 0)
+		{
+			base = "ws://" + base.substr(7);
+		}
+		else if (base.compare(0, 6, "wss://") != 0 && base.compare(0, 5, "ws://") != 0)
+		{
+			return std::string();
+		}
+
+		return base + path;
+	}
+
+	void PregameApplyFrame(const std::string& text)
+	{
+		nlohmann::json frame = nlohmann::json::parse(text, nullptr, false);
+
+		if (frame.is_discarded() || !frame.is_object())
+		{
+			return;
+		}
+
+		const std::string type = frame.value("type", std::string());
+
+		std::lock_guard<std::mutex> lock(s_pregameMutex);
+
+		if (type == "snapshot")
+		{
+			s_pregameState.fromFeed = true;
+			s_pregameState.live = frame.value("phase", std::string("pregame")) == "live";
+			s_pregameState.lobbyName = frame.value("lobby_name", std::string());
+			s_pregameState.delaySeconds = frame.value("delay_seconds", -1);
+			s_pregameState.countdownStarted = frame.value("countdown_started", false);
+			s_pregameState.countdownEndsAtUnixMs = frame.value("countdown_ends_at_unix_ms", 0LL);
+
+			if (!s_pregameState.live)
+			{
+				s_pregameState.startsInSeconds = -1;
+			}
+
+			s_pregameState.slots.clear();
+
+			if (frame.contains("slots") && frame["slots"].is_array())
+			{
+				for (const nlohmann::json& slot : frame["slots"])
+				{
+					GencastLobbySlot parsed;
+					parsed.slotIndex = slot.value("slot_index", -1);
+					parsed.state = slot.value("state", std::string("open"));
+					parsed.displayName = slot.value("display_name", std::string());
+					parsed.ready = slot.value("ready", false);
+					parsed.isAi = slot.value("is_ai", false);
+
+					if (parsed.slotIndex >= 0)
+					{
+						s_pregameState.slots.push_back(parsed);
+					}
+				}
+			}
+
+			s_pregameDirty = true;
+		}
+		else if (type == "chat")
+		{
+			GencastLobbyChat line;
+			line.from = frame.value("from", std::string());
+			line.text = frame.value("text", std::string());
+			line.kind = frame.value("kind", std::string("player"));
+			line.atUnixMs = frame.value("at_unix_ms", 0LL);
+
+			if (!line.text.empty())
+			{
+				s_pregameChat.push_back(line);
+				s_pregameDirty = true;
+			}
+		}
+		else if (type == "countdown")
+		{
+			// The transition frame says "started" or "cancelled" and carries the host's absolute
+			// end, which is the only way to run the same countdown the host is running.
+			const bool started = frame.value("state", std::string("cancelled")) == "started";
+			s_pregameState.countdownStarted = started;
+			s_pregameState.countdownEndsAtUnixMs = started
+				? frame.value("ends_at_unix_ms", 0LL) : 0LL;
+			s_pregameDirty = true;
+		}
+		else if (type == "live")
+		{
+			s_pregameState.live = true;
+			s_pregameState.startsInSeconds = frame.value("starts_in_seconds", 0);
+			const int delay = frame.value("delay_seconds", -1);
+
+			if (delay >= 0)
+			{
+				s_pregameState.delaySeconds = delay;
+			}
+
+			s_pregameDirty = true;
+		}
+		else if (type == "error")
+		{
+			// lobby_gone: nothing more is coming, and the view should say so rather than wait.
+			s_pregameState.live = false;
+			s_pregameDirty = true;
+		}
+	}
+
+	void PregameSocketLoop(std::string url)
+	{
+		while (s_pregameRun.load())
+		{
+			CURL* easy = curl_easy_init();
+
+			if (easy == nullptr)
+			{
+				break;
+			}
+
+			curl_easy_setopt(easy, CURLOPT_URL, url.c_str());
+			curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L);
+
+			// wss:// needs trust anchors: this libcurl is OpenSSL, which does not read the Windows
+			// store. Same bundle, same rule as LiveObserver.
+			{
+				std::ifstream certFile("cacert.pem");
+
+				if (certFile.good())
+				{
+					certFile.close();
+					curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
+					curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
+					curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
+				}
+				else
+				{
+					curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
+					curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
+				}
+			}
+
+			const CURLcode connected = curl_easy_perform(easy);
+
+			if (connected != CURLE_OK)
+			{
+				curl_easy_cleanup(easy);
+
+				GencastDebugLog("gencast: pregame socket connect failed url=%s code=%d", url.c_str(),
+					(int)connected);
+
+				for (int i = 0; i < 200 && s_pregameRun.load(); ++i)
+				{
+					Sleep(10);
+				}
+
+				continue;
+			}
+
+			s_pregameConnected.store(true);
+			GencastDebugLog("gencast: pregame socket open url=%s", url.c_str());
+
+			std::vector<char> buffer(65536);
+
+			while (s_pregameRun.load())
+			{
+				const struct curl_ws_frame* meta = nullptr;
+				size_t received = 0;
+				const CURLcode rc = curl_ws_recv(easy, buffer.data(), buffer.size(), &received, &meta);
+
+				if (rc == CURLE_AGAIN)
+				{
+					Sleep(10);
+					continue;
+				}
+
+				if (rc != CURLE_OK)
+				{
+					break;
+				}
+
+				if (meta == nullptr || received == 0)
+				{
+					continue;
+				}
+
+				if ((meta->flags & CURLWS_PING) != 0)
+				{
+					size_t sent = 0;
+					curl_ws_send(easy, buffer.data(), received, &sent, 0, CURLWS_PONG);
+					continue;
+				}
+
+				if ((meta->flags & CURLWS_CLOSE) != 0)
+				{
+					break;
+				}
+
+				if ((meta->flags & CURLWS_TEXT) != 0)
+				{
+					PregameApplyFrame(std::string(buffer.data(), received));
+				}
+			}
+
+			s_pregameConnected.store(false);
+			curl_easy_cleanup(easy);
+
+			if (!s_pregameRun.load())
+			{
+				break;
+			}
+
+			GencastDebugLog("gencast: pregame socket closed url=%s - reconnecting", url.c_str());
+
+			for (int i = 0; i < 200 && s_pregameRun.load(); ++i)
+			{
+				Sleep(10);
+			}
+		}
+	}
+}
+
+void GencastPregameSocketStart()
+{
+	GencastPregameSocketStop();
+
+	const std::string url = PregameSocketUrl();
+
+	if (url.empty())
+	{
+		return;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(s_pregameMutex);
+		s_pregameState = GencastLobbyStreamState();
+		s_pregameChat.clear();
+		s_pregameDirty = false;
+	}
+
+	s_pregameRun.store(true);
+	s_pregameThread = std::thread(PregameSocketLoop, url);
+}
+
+void GencastPregameSocketStop()
+{
+	s_pregameRun.store(false);
+
+	if (s_pregameThread.joinable())
+	{
+		s_pregameThread.join();
+	}
+
+	s_pregameConnected.store(false);
+
+	std::lock_guard<std::mutex> lock(s_pregameMutex);
+	s_pregameChat.clear();
+	s_pregameDirty = false;
+}
+
+bool GencastPregameSocketConnected()
+{
+	return s_pregameConnected.load();
+}
+
+bool GencastPregameSocketTake(GencastLobbyStreamState& out)
+{
+	std::lock_guard<std::mutex> lock(s_pregameMutex);
+
+	if (!s_pregameDirty)
+	{
+		return false;
+	}
+
+	out = s_pregameState;
+	out.chat.swap(s_pregameChat);
+	s_pregameChat.clear();
+	s_pregameDirty = false;
+
+	return true;
+}
