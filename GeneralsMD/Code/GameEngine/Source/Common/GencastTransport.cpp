@@ -900,7 +900,8 @@ void GencastPostWatcherChat(const AsciiString& lobbyId, const AsciiString& text)
 	}).detach();
 }
 
-bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamState& out)
+bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& password,
+	GencastLobbyStreamState& out)
 {
 	out = GencastLobbyStreamState();
 
@@ -955,6 +956,7 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamS
 	static std::string s_feedUrl;
 	static long long s_feedSince = 0;
 	static bool s_feedAsked = false;
+	static std::string s_feedPassword;
 
 	std::thread([id]()
 	{
@@ -994,11 +996,19 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamS
 				// from the relay's pregame feed. It needs a session, which the join hands out for a
 				// lobby that has not started; a lobby whose group wants a password answers 401 here
 				// (the password prompt comes later, at watch time) and the list above stands alone.
-				if (s_feedLobby != id)
+				const std::string watchedPassword(password.str());
+
+				// A new password (or a new lobby) is a new question: the previous refusal was about
+				// the credential, and holding the "already asked" flag would keep the preview shut
+				// after the viewer typed it.
+				if (s_feedLobby != id || s_feedPassword != watchedPassword)
 				{
 					s_feedUrl.clear();
 					s_feedSince = 0;
 					s_feedAsked = false;
+					s_feedPassword = watchedPassword;
+					s_feedLobby = id;
+					answer.passwordRequired = false;
 				}
 
 				// Once per lobby, not once per probe: the answer cannot change without a password
@@ -1022,7 +1032,7 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamS
 						// and must not sit in that call's 20 s retry window on a lobby that has
 						// nothing to watch yet.
 						const GencastAttemptResult joined =
-							transport->AttemptWatchSession(id, "", "", watcherId, false);
+							transport->AttemptWatchSession(id, watchedPassword, "", watcherId, false);
 
 						s_feedLobby = id;
 
@@ -1036,8 +1046,11 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamS
 						}
 						else
 						{
-							// Remembered as "no feed" for this lobby so every probe does not re-ask:
-							// the answer will not change without the password.
+							// 401 is the one refusal the viewer can fix: the lobby's group wants a
+							// password and this client has none. The view asks for it; every other
+							// answer is final until the password changes.
+							answer.passwordRequired = joined.httpStatus == 401;
+
 							GencastDebugLog("gencast: no pregame feed for lobby=%s kind=%d status=%d",
 								id.c_str(), (int)joined.kind, joined.httpStatus);
 						}

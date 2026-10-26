@@ -122,6 +122,8 @@ static Bool s_streamLivePending = FALSE;
 static int s_relayDelayShown = -2;
 // The board the feed last described, so the slots are rebuilt on a change and not on every probe.
 static std::string s_feedSlotSignature;
+// One line, not one per probe: the password refusal repeats for as long as the view is open.
+static Bool s_passwordNoticeShown = FALSE;
 static int s_relayStartsInShown = -2;	// stream-live arrived mid-countdown; join at 0
 static Bool s_lobbyGone = FALSE;
 static UnsignedInt s_lobbyGoneAtMs = 0;
@@ -1136,12 +1138,21 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 	{
 		GencastLobbyStreamState relayState;
 
-		if (GencastPollLobbyStreamState(s_observerLobbyId, relayState))
+		if (GencastPollLobbyStreamState(s_observerLobbyId, s_observerPassword, relayState))
 		{
 			// The host's lobby as the relay sees it: title, watch delay and chat. Only the feed
 			// carries these in direct mode - the lobby list has no chat - so a viewer without a
 			// feed (a passworded group, before the password is typed) simply gets nothing here and
 			// still watches.
+			// The lobby's group wants the watch password and this view has none: say so once, and
+			// point at the way in (the watch list asks for it before it opens this screen).
+			if (relayState.passwordRequired && s_observerPassword.isEmpty() && !s_passwordNoticeShown)
+			{
+				s_passwordNoticeShown = TRUE;
+				observerChat(UnicodeString(L"This lobby needs the watch password - go back and pick it again to type it"),
+					GameMakeColor(255, 194, 15, 255));
+			}
+
 			if (relayState.fromFeed)
 			{
 				// The feed answering is the direct-mode equivalent of GO's AllowObserverChat: the

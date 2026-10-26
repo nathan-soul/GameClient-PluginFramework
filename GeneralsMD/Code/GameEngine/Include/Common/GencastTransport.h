@@ -405,6 +405,10 @@ struct GencastLobbyStreamState
 	bool countdownStarted = false;      ///< the host's match-start countdown is running
 	long long countdownEndsAtUnixMs = 0;///< wall-clock end of that countdown, 0 when unknown
 
+	/// True when the relay refused the feed because this lobby's group wants its watch password
+	/// and none was supplied: the viewer has to be asked before the preview opens.
+	bool passwordRequired = false;
+
 	/// True when the answer came from the relay's pregame feed rather than the lobby list: the
 	/// rest of the fields are then the lobby as the host's own client sees it (slots, title, delay,
 	/// chat), which is what the lobby view renders in direct mode.
@@ -423,7 +427,11 @@ struct GencastLobbyStreamState
 
 /// One non-blocking step of that question. Returns true when a fresh answer was available and
 /// fills <paramref name="out"/>; false while the probe is still in flight or was just made.
-bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamState& out);
+/// One step of "what is this lobby doing". `password` is the watch password the viewer has for
+/// this lobby's group, empty when none has been asked for yet; the feed needs it exactly like the
+/// watch does, so a passworded lobby's preview stays closed until it is typed.
+bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& password,
+	GencastLobbyStreamState& out);
 
 /// Sends a watcher's own lobby line to the relay, on a worker. Direct mode only; the line comes
 /// back through the feed with the next answer, exactly like everyone else's.

@@ -365,7 +365,10 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 					entry.countdownStarted = lobby.value("countdown_started", false);
 					entry.countdownEndsAtUnixMs = lobby.value("countdown_ends_at_unix_ms", 0LL);
 					entry.state = lobby.value("state", "");
-					entry.hasPassword = lobby.value("has_password", false);
+					// Which lobbies cost the group's password. The watch list gates its button on
+					// this, so it must come from the group and not from a blanket flag.
+					entry.hasPassword = lobby.value("requires_password",
+						lobby.value("has_password", false));
 
 					if (lobby.contains("players"))
 					{
