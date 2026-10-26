@@ -4,6 +4,7 @@
 
 #include "Common/GencastTransport.h"
 #include "Common/GlobalData.h"
+#include "Common/GencastClientLog.h"   // GencastDebugLog, for the permission lines
 #include "Common/LiveObserver.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 // The pregame announce reads the player's Services id, and OnlineServices_Init.h only forward
