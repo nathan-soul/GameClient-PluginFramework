@@ -1064,15 +1064,11 @@ void GencastEndCurrentMatch(const char* reason)
 */
 void GencastRegisterWatcher()
 {
-	// Per account, not per process. A player who logs out and back in as somebody else is a new
-	// player to the relay, and must get their own row: a once-flag here left the second account
-	// unregistered for the whole run, so it never appeared in the player list and could not join.
-	static std::mutex s_mutex;
-	static uint64_t s_registeredUserId = 0;
-
-	// Checked before the guard, never inside it: a call that arrives before the settings are
-	// loaded (or in a stock install, where direct mode never turns on) must not consume the
-	// attempt for the account that logs in later.
+	// Every successful login registers, with no per-process or per-account latch. Logging out and
+	// back in as somebody else is a new player to the relay and must get its own row - a once-flag
+	// here left the second account unregistered for the whole run, so it never appeared in the
+	// player list and could not join. The endpoint is idempotent, and its rate limit counts new
+	// rows rather than calls, so a relogin only refreshes last_seen_at and the display name.
 	if (!DirectModeConfigured())
 	{
 		return;
@@ -1097,18 +1093,6 @@ void GencastRegisterWatcher()
 	if (displayName == "NO_USER")
 	{
 		displayName.clear();
-	}
-
-	{
-		std::lock_guard<std::mutex> lock(s_mutex);
-
-		// The same account logging in again (a reconnect, a relogin) has nothing new to register.
-		if (s_registeredUserId == userId)
-		{
-			return;
-		}
-
-		s_registeredUserId = userId;
 	}
 
 	try
