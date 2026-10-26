@@ -1029,7 +1029,38 @@ void GameEngine::update()
 		// and updatePlayback() - the only other caller - runs from inside that halt.
 		if (TheRecorder && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER
 			&& TheLiveObserver && TheGameLogic)
+		{
 			TheLiveObserver->updatePlaybackGate(TheGameLogic->getFrame());
+
+			// The stream is over while the match is still being played: the streamer left the game,
+			// or the relay gave up waiting for them to come back. Nothing later in the replay ends
+			// this match, so the watcher would sit on the last frame for ever - which reads as
+			// "paused" and is what a watcher reported. Leave the way the in-game Exit button does.
+			//
+			// The condition, not a latch, is the state: a match that ends on its own stops being
+			// interactive before END arrives, so a normal finish keeps its score screen. The short
+			// grace is for the moment between a victory and the shell taking over.
+			static UnsignedInt s_streamOverSeenMs = 0;
+
+			if (TheLiveObserver->isStreamEnded() && TheGameLogic->isInInteractiveGame() &&
+				!TheGameLogic->isInGameLogicUpdate())
+			{
+				if (s_streamOverSeenMs == 0)
+				{
+					s_streamOverSeenMs = timeGetTime();
+				}
+				else if (timeGetTime() - s_streamOverSeenMs > 3000)
+				{
+					s_streamOverSeenMs = 0;
+					liveObserverLog("LiveObserver: stream ended mid-match - leaving the observer view\n");
+					TheGameLogic->clearGameData();
+				}
+			}
+			else
+			{
+				s_streamOverSeenMs = 0;
+			}
+		}
 #endif
 
 		// TheSuperHackers @info Ignores frozen time because the script engine needs updating in the logic update regardless.

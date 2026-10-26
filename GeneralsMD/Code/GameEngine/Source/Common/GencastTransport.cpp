@@ -1064,11 +1064,15 @@ void GencastEndCurrentMatch(const char* reason)
 */
 void GencastRegisterWatcher()
 {
-	static std::once_flag s_registered;
+	// Per account, not per process. A player who logs out and back in as somebody else is a new
+	// player to the relay, and must get their own row: a once-flag here left the second account
+	// unregistered for the whole run, so it never appeared in the player list and could not join.
+	static std::mutex s_mutex;
+	static uint64_t s_registeredUserId = 0;
 
-	// Checked before the flag, never inside it: a call that arrives before the settings are
-	// loaded (or in a stock install, where direct mode never turns on) must not consume the one
-	// attempt this process has.
+	// Checked before the guard, never inside it: a call that arrives before the settings are
+	// loaded (or in a stock install, where direct mode never turns on) must not consume the
+	// attempt for the account that logs in later.
 	if (!DirectModeConfigured())
 	{
 		return;
@@ -1095,20 +1099,29 @@ void GencastRegisterWatcher()
 		displayName.clear();
 	}
 
+	{
+		std::lock_guard<std::mutex> lock(s_mutex);
+
+		// The same account logging in again (a reconnect, a relogin) has nothing new to register.
+		if (s_registeredUserId == userId)
+		{
+			return;
+		}
+
+		s_registeredUserId = userId;
+	}
+
 	try
 	{
-		std::call_once(s_registered, [userId, displayName]()
-			{
-				// Built here rather than through GencastTransport::Create(): the mode is already
-				// known (the check above), and Create() re-runs the Services reachability probe,
-				// which is a blocking HEAD nobody asked for.
-				std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+		// Built here rather than through GencastTransport::Create(): the mode is already known
+		// (the check above), and Create() re-runs the Services reachability probe, which is a
+		// blocking HEAD nobody asked for.
+		std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
 
-				if (transport)
-				{
-					transport->RegisterWatcher(userId, displayName);
-				}
-			});
+		if (transport)
+		{
+			transport->RegisterWatcher(userId, displayName);
+		}
 	}
 	catch (...)
 	{
