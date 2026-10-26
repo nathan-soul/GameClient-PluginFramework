@@ -196,6 +196,12 @@ struct GencastAttemptResult
 	/// Non-empty when the relay answered with a pregame session: the lobby exists but has not
 	/// started, and this is the feed to read it from. A caller that wants to watch must wait.
 	std::string pregameUrl;
+
+	/// The polling lane of that feed (`/direct/pregame/{id}/events`), as the relay names it.
+	///
+	/// Separate from `pregameUrl` because that is the bug this replaces: the client appended its
+	/// cursor to the socket route and every fetch was refused, with nothing logged.
+	std::string eventsUrl;
 	/// False on a pregame answer; true for every answer that names a watch session, and for older
 	/// relays that send neither field.
 	bool live = true;
