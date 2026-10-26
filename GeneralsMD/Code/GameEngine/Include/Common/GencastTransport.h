@@ -207,6 +207,22 @@ public:
 	virtual void QueryStreamPermission(uint64_t userId, const std::string& matchId,
 		GencastStreamPermissionCallback done) = 0;
 
+	// Direct mode: tell the relay that this account exists, once, when the client starts.
+	//
+	// A viewer who never hosts has no row at the relay, and the join gate refuses an account it
+	// cannot find (403) - so without this a pure watcher cannot watch anything at all. Nothing
+	// else in this client speaks for a player who only watches: the announce and the permission
+	// question both need a lobby, and a viewer may never enter one.
+	//
+	// userId is GetUserID() and displayName the name GO knows. There is no client id parameter
+	// on purpose: the relay stores it on the player row so a takeover dialog can name the
+	// connection, which means it has to be the id the join sends - one value, from one place.
+	//
+	// Fire-and-forget. The request goes out on a worker, a failure is a log line and never a
+	// dialog, and the only thing reported back is the watcher's group and whether that group
+	// needs a password. Never a password: the relay does not return one either.
+	virtual void RegisterWatcher(uint64_t userId, const std::string& displayName) {}
+
 	// Called by the shared policy when the viewer's hold state changes: waiting behind an
 	// admission hold or a broadcast delay. Services sets it, the relay never does.
 	virtual void OnHoldStateChanged(bool serverHeld, bool waitingForDelay) {}
@@ -303,6 +319,23 @@ void GencastAnnounceCurrentLobby();
 */
 void GencastUnannounceCurrentLobby();
 void GencastEndCurrentMatch(const char* reason);
+
+/*
+**	"Register me as a viewer" - once per process start, in direct mode.
+**
+**	Called from the end of a successful GO login (NGMP_OnlineServicesManager::OnLogin). That is
+**	the earliest moment both halves of the question are known: the GO user id the relay keys the
+**	player row on, and the mode this client is in. Deliberately not hung off the transport's own
+**	mode detection or the lobby announce: those are reached from a lobby refresh, and a pure
+**	watcher never enters a lobby - which is exactly the account this call exists for.
+**
+**	Once per process start even when login completes again (a token refresh that has to log in
+**	reaches the same hook). No-op outside direct mode, so callers need no mode test of their own,
+**	and no-op without a user id: the registration is never worth inventing an account for. A
+**	relay that cannot be reached must not cost the player a login, a menu or a game, so the
+**	request is sent from a worker with a couple of retries and every outcome is one log line.
+*/
+void GencastRegisterWatcher();
 
 /*
 **	The relay's streaming permission for the lobby the local player is in.

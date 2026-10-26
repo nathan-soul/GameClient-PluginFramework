@@ -5,6 +5,7 @@
 #include "GameClient/MessageBox.h"
 #include "Common/FileSystem.h"
 #include "Common/file.h"
+#include "Common/GencastTransport.h"		// direct mode: register this account as a watcher at start
 #include "WWLib/realcrc.h"
 #include "GameNetwork/DownloadManager.h"
 #include <ws2tcpip.h>
@@ -851,6 +852,15 @@ void NGMP_OnlineServicesManager::OnLogin(ELoginResult loginResult, const char* s
 		{
 			NetworkMeshLibrary::EnsureInitialized(pAuthInterface->GetUserID());
 		}
+
+		// A player who only ever watches has no other way to reach the relay: it never hosts, so
+		// it never announces a lobby, and without a player row the relay's join gate refuses it
+		// (403). Register once per process start from here, because this is the earliest point
+		// where both things it needs are known - the GO user id the relay keys the row on, and
+		// the fact that this client is in direct mode - and it is reached before the menus that
+		// lead to Watch Live. Fire-and-forget: it sends from a worker and settles for a log line,
+		// so no outcome of it can hold up a login, a menu or a game. No-op outside direct mode.
+		GencastRegisterWatcher();
 
 		// Tear down any previous session's websocket before replacing it.
 		if (m_pWebSocket != nullptr)

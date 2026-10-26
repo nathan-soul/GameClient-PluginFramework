@@ -13,6 +13,7 @@
 
 #include <curl/curl.h>
 
+#include <chrono>
 #include <mutex>
 #include <thread>
 
@@ -422,6 +423,144 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 			done(permission);
 		}
 
+		/// Fire-and-forget: "this account exists, and it may want to watch something".
+		///
+		/// Reached from the login completion on the game thread, so the body is built here and
+		/// only the finished request goes to a worker - Perform() is synchronous with the same
+		/// five second timeout as the rest of the transport, and a login must not wait on it.
+		///
+		/// The client id is GencastClientId(), the value AttemptWatchSession sends as client_id:
+		/// the relay stores it on the player row and shows it in a takeover dialog, so a second
+		/// identity minted here would name a connection that never joins.
+		void RegisterWatcher(uint64_t userId, const std::string& displayName) override
+		{
+			if (userId == 0)
+			{
+				GencastDebugLog("gencast: watcher register skipped, no GO user id");
+				return;
+			}
+
+			const std::string clientId = GencastClientId();
+
+			nlohmann::json request;
+			// The GO Services user id: the identity /direct/join takes, and the one the relay
+			// keys the player row on. A record id would register an account nobody can join as.
+			request["user_id"] = (unsigned long long)userId;
+			request["client_id"] = clientId;
+
+			// Refresh only: an absent name leaves whatever the relay already stored. The name
+			// comes from GO and may not be valid UTF-8, which is why dump() is guarded below.
+			if (!displayName.empty())
+			{
+				request["display_name"] = displayName;
+			}
+
+			std::string body;
+
+			try
+			{
+				body = request.dump();
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				GencastDebugLog("gencast: watcher register user=%llu client=%s skipped, "
+					"details unencodable",
+					(unsigned long long)userId, clientId.c_str());
+				return;
+			}
+
+			const std::string url = BaseUrl() + "/direct/watcher/register";
+
+			try
+			{
+				std::thread([url, body, userId, clientId]()
+					{
+						// A couple of tries, not a loop: this is a convenience for the next join,
+						// never a precondition for playing, and a relay that is down must cost
+						// the player one log line rather than a request every few seconds.
+						const int kMaxAttempts = 3;
+
+						int attempts = 0;
+						HttpResponse response;
+						bool answered = false;
+
+						for (;;)
+						{
+							++attempts;
+							response = HttpResponse();
+							answered = Perform(url, body.c_str(), response);
+
+							// Only a missing answer and a server-side failure are accidents worth
+							// a retry. Every other status is the relay's decision: 400 is this
+							// client's bug, 404 is a relay with direct watch closed and 429 is a
+							// rate limit that retrying in the same second would only feed.
+							if (answered && response.status != 0 && response.status < 500)
+							{
+								break;
+							}
+
+							if (attempts >= kMaxAttempts)
+							{
+								break;
+							}
+
+							// 2 s, then 4 s: long enough for a relay that is still starting,
+							// short enough that the last try lands while the player is in the
+							// menus the Watch Live button lives in.
+							std::this_thread::sleep_for(std::chrono::seconds(2 * attempts));
+						}
+
+						if (!answered || response.status != 200)
+						{
+							GencastDebugLog("gencast: watcher register user=%llu client=%s -> %s "
+								"status=%ld attempts=%d category=(unknown) "
+								"requires_password=unknown",
+								(unsigned long long)userId, clientId.c_str(),
+								answered ? "refused" : "relay unreachable", response.status,
+								attempts);
+							return;
+						}
+
+						// What the relay says about the group this account landed in. The answer
+						// carries no password and this never asks for one: the line exists so a
+						// tester can see which group a watcher was registered in and whether a
+						// password will be needed at the join gate.
+						std::string categoryName = "(none)";
+						bool requiresPassword = false;
+
+						try
+						{
+							const nlohmann::json answer = nlohmann::json::parse(response.body);
+
+							categoryName = answer.value("category_name", std::string());
+							requiresPassword = answer.value("requires_password", false);
+						}
+						catch (const nlohmann::json::exception&)
+						{
+							// Registered all the same: the row is what the join gate needs, and
+							// the answer's details are only for this line.
+						}
+
+						if (categoryName.empty())
+						{
+							categoryName = "(none)";
+						}
+
+						GencastDebugLog("gencast: watcher register user=%llu client=%s -> status=200 "
+							"category=%s requires_password=%d",
+							(unsigned long long)userId, clientId.c_str(), categoryName.c_str(),
+							requiresPassword ? 1 : 0);
+					}).detach();
+			}
+			catch (...)
+			{
+				// No worker (out of resources): the next join will 403 exactly as it does today,
+				// and nothing else changes.
+				GencastDebugLog("gencast: watcher register user=%llu client=%s skipped, no worker",
+					(unsigned long long)userId, clientId.c_str());
+			}
+		}
+
 		GencastAttemptResult AttemptWatchSession(const std::string& lobbyId,
 			const std::string& password, const std::string& matchId, uint64_t watcherId,
 			bool kickExisting) override
@@ -449,6 +588,8 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 
 			// Who is asking, so a 409 can tell the next client which connection it would be
 			// disconnecting. Purely descriptive: the relay never grants anything from it.
+			// The same id RegisterWatcher stores on this account's player row - one identity per
+			// install, in both requests, or the takeover dialog names a client that never joins.
 			request["client_id"] = GencastClientId();
 
 			// Only after the player confirmed taking the account's other connection over.

@@ -65,6 +65,20 @@ namespace
 
 		return result == CURLE_OK && httpStatus != 404;
 	}
+
+	/*
+	**	Is this client in direct mode?
+	**
+	**	The same test GencastTransport::DetermineMode() makes before it probes Services, without
+	**	the probe itself. Shared so the mode is decided in one place: the resolve helpers below
+	**	and the watcher registration must not be able to disagree about whether there is a relay
+	**	to talk to at all.
+	*/
+	bool DirectModeConfigured()
+	{
+		return NGMP_OnlineServicesManager::Settings.Relay_Direct() &&
+			!NGMP_OnlineServicesManager::Settings.Relay_Direct_Url().empty();
+	}
 }
 
 const char* GencastModeName(EGencastMode mode)
@@ -280,8 +294,7 @@ namespace
 
 	bool ResolveDirectLobbyIdentity(DirectLobbyIdentity& out)
 	{
-		if (!NGMP_OnlineServicesManager::Settings.Relay_Direct() ||
-			NGMP_OnlineServicesManager::Settings.Relay_Direct_Url().empty())
+		if (!DirectModeConfigured())
 		{
 			// Without a URL the transport resolves to the Services mode, whose reachability probe
 			// (a blocking HEAD) has no business running from a lobby refresh.
@@ -372,8 +385,7 @@ namespace
 	*/
 	bool ResolveStreamPermissionIdentity(DirectLobbyIdentity& out)
 	{
-		if (!NGMP_OnlineServicesManager::Settings.Relay_Direct() ||
-			NGMP_OnlineServicesManager::Settings.Relay_Direct_Url().empty())
+		if (!DirectModeConfigured())
 		{
 			return false;
 		}
@@ -808,6 +820,76 @@ void GencastEndCurrentMatch(const char* reason)
 	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName,
 		identity.mapName);
 	transport->EndMatch(identity.lobbyId, identity.matchId, reason);
+}
+
+/*
+**	"I am here, and I only want to watch."
+**
+**	The relay's join gate refuses an account it has no player row for, and a pure viewer has no
+**	other way to get one: it never announces a lobby and never asks for stream permission, which
+**	are the only two calls that create a row. Registering here is what turns that 403 into a
+**	session for somebody who has never hosted anything.
+**
+**	Once per process start. OnLogin can complete a second time - a token refresh that has to log
+**	in again reaches it - and the registration is idempotent at the relay, but "once per client
+**	start" is the contract and a repeated request at a rate-limited endpoint is not worth the
+**	thing it would not change.
+*/
+void GencastRegisterWatcher()
+{
+	static std::once_flag s_registered;
+
+	// Checked before the flag, never inside it: a call that arrives before the settings are
+	// loaded (or in a stock install, where direct mode never turns on) must not consume the one
+	// attempt this process has.
+	if (!DirectModeConfigured())
+	{
+		return;
+	}
+
+	NGMP_OnlineServices_AuthInterface* authInterface =
+		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+
+	if (authInterface == nullptr || authInterface->GetUserID() <= 0)
+	{
+		// Login reported success without an account. There is nothing to register, and spending
+		// the flag here would keep the next - real - login from doing it.
+		GencastDebugLog("gencast: watcher register skipped, no GO user id");
+		return;
+	}
+
+	const uint64_t userId = (uint64_t)authInterface->GetUserID();
+	std::string displayName = authInterface->GetDisplayName();
+
+	// The auth interface's own "nothing has arrived yet" value, not a name. Sending it would
+	// replace a display name the relay already knows with a placeholder.
+	if (displayName == "NO_USER")
+	{
+		displayName.clear();
+	}
+
+	try
+	{
+		std::call_once(s_registered, [userId, displayName]()
+			{
+				// Built here rather than through GencastTransport::Create(): the mode is already
+				// known (the check above), and Create() re-runs the Services reachability probe,
+				// which is a blocking HEAD nobody asked for.
+				std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+
+				if (transport)
+				{
+					transport->RegisterWatcher(userId, displayName);
+				}
+			});
+	}
+	catch (...)
+	{
+		// No worker, or no transport: the registration is a convenience for the next join, so it
+		// may never become an exception on the way out of a successful login.
+		GencastDebugLog("gencast: watcher register user=%llu skipped, no worker",
+			(unsigned long long)userId);
+	}
 }
 
 #endif // GENERALS_ONLINE
