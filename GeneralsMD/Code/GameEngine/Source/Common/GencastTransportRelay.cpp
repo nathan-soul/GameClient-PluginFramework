@@ -789,6 +789,20 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		/// One request of the pregame feed: the lobby as the host announced it, every chat line after
 		/// the caller's cursor, and the cursor to ask from next time.
 		/// </summary>
+		bool PostLobbyChat(const std::string& lobbyId, const std::string& from,
+			const std::string& kind, const std::string& text) override
+		{
+			nlohmann::json body;
+			body["lobby_id"] = lobbyId;
+			body["from"] = from;
+			body["kind"] = kind;
+			body["text"] = text;
+
+			HttpResponse response;
+
+			return Perform(BaseUrl() + "/direct/chat", body.dump(), response) && response.status == 200;
+		}
+
 		bool FetchPregameEvents(const std::string& eventsUrl, long long since,
 			GencastPregameEvents& out) override
 		{

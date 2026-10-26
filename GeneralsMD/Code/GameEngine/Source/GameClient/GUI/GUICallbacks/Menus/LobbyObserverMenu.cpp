@@ -1144,6 +1144,13 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 			// still watches.
 			if (relayState.fromFeed)
 			{
+				// The feed answering is the direct-mode equivalent of GO's AllowObserverChat: the
+				// relay is carrying this lobby, so the entry has somewhere to send to.
+				if (!s_allowObserverChat)
+				{
+					s_allowObserverChat = TRUE;
+					applyObserverChatEntryState();
+				}
 				if (relayState.delaySeconds >= 0 && relayState.delaySeconds != s_relayDelayShown)
 				{
 					s_relayDelayShown = relayState.delaySeconds;
@@ -1507,11 +1514,20 @@ WindowMsgHandledType LobbyObserverInput(GameWindow* window, UnsignedInt msg,
 				txtInput.trim();
 				if (!txtInput.isEmpty() && observerChatSlowmodeAllowsSend())
 				{
-					NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
-						NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
-					if (pLobbyInterface != nullptr && !s_observerLobbyId.isEmpty())
+					// Direct mode has no GO lobby to post into: the relay carries the line, and it
+					// comes back through the feed with everyone else's.
+					if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
 					{
-						pLobbyInterface->SendObserverChatMessage(_atoi64(s_observerLobbyId.str()), txtInput);
+						GencastPostWatcherChat(s_observerLobbyId, txtInput);
+					}
+					else
+					{
+						NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
+							NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+						if (pLobbyInterface != nullptr && !s_observerLobbyId.isEmpty())
+						{
+							pLobbyInterface->SendObserverChatMessage(_atoi64(s_observerLobbyId.str()), txtInput);
+						}
 					}
 				}
 				return MSG_HANDLED;

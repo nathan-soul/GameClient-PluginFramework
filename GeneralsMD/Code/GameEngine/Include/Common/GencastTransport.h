@@ -245,6 +245,15 @@ public:
 	//
 	// kickExisting asks the relay to drop a session this account already has on this match
 	// (409 -> retry). Only ever set after the player confirmed that takeover.
+	/// One chat line from a watcher into the host's lobby, in direct mode. The relay stamps nothing:
+	/// `from` is the watcher's own name and `kind` is "watcher", so the host's players can tell the
+	/// two lanes apart.
+	virtual bool PostLobbyChat(const std::string& lobbyId, const std::string& from,
+		const std::string& kind, const std::string& text)
+	{
+		return false;
+	}
+
 	/// The pregame feed, for a client with no push lane: one request brings the lobby as the host's
 	/// client announced it, every chat line after `since`, and the cursor to ask from next time.
 	/// Returns false when the feed is not available (services mode, no session, or a refusal).
@@ -415,6 +424,10 @@ struct GencastLobbyStreamState
 /// One non-blocking step of that question. Returns true when a fresh answer was available and
 /// fills <paramref name="out"/>; false while the probe is still in flight or was just made.
 bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamState& out);
+
+/// Sends a watcher's own lobby line to the relay, on a worker. Direct mode only; the line comes
+/// back through the feed with the next answer, exactly like everyone else's.
+void GencastPostWatcherChat(const AsciiString& lobbyId, const AsciiString& text);
 
 /*
 **	Mirror one lobby chat line to the relay, when direct mode has an entry to attach it to.

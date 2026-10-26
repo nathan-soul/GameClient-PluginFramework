@@ -854,6 +854,52 @@ void GencastAnnounceCurrentLobby()
 **	The answer carries the host's countdown too: a direct-mode viewer counts down from the same
 **	absolute end the lobby's own members do, where services mode is pushed GAME_STARTING by GO.
 */
+/// A watcher's own line, sent straight to the relay. Detached on purpose: the transport is
+/// synchronous, and the lobby view's frame must not wait for a round-trip - the line appears when
+/// the next feed answer carries it back, which is the same second.
+void GencastPostWatcherChat(const AsciiString& lobbyId, const AsciiString& text)
+{
+	if (lobbyId.isEmpty() || text.isEmpty())
+	{
+		return;
+	}
+
+	const std::string id(lobbyId.str());
+	const std::string body(text.str());
+
+	std::thread([id, body]()
+	{
+		try
+		{
+			std::string from;
+
+			NGMP_OnlineServices_AuthInterface* auth =
+				NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+
+			if (auth != nullptr)
+			{
+				from = auth->GetDisplayName();
+			}
+
+			std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+
+			if (!transport)
+			{
+				return;
+			}
+
+			if (!transport->PostLobbyChat(id, from, "watcher", body))
+			{
+				GencastDebugLog("gencast: watcher chat was not delivered lobby=%s", id.c_str());
+			}
+		}
+		catch (...)
+		{
+			// A chat line is not worth taking the view down for.
+		}
+	}).detach();
+}
+
 bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamState& out)
 {
 	out = GencastLobbyStreamState();
