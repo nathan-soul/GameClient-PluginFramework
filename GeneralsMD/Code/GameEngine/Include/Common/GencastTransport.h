@@ -50,6 +50,12 @@ struct GencastWatchEntry
 	// one, so the id is what names the game the viewer clicked; empty when the relay has none.
 	std::string matchId;
 	std::string mapName;
+	// The host's title for the lobby. Kept apart from mapName so the watch list can show both;
+	// empty when the relay has none (an older client's announce never carried it).
+	std::string lobbyName;
+	// The lobby's minimum watch delay in seconds, or -1 when the relay did not say. Display
+	// only: the delay the relay applies arrives on the ROLE frame, not from here.
+	int delaySeconds = -1;
 	std::string playersJson;
 	// "pregame" while the players are seating, "live" while the match runs, "ended" during the
 	// relay's post-game hold: still watchable, no longer a lobby.
@@ -269,9 +275,12 @@ public:
 	//
 	// playerId is the wire slot id (1-based) and stays the fallback identity; userId is the GO
 	// Services id the relay prefers, and <= 0 means "not signed in". displayName and mapName
-	// are display data only.
+	// are display data only, and so are lobbyName (the host's title) and delaySeconds (the
+	// lobby's minimum watch delay, -1 when unknown) - the watch list shows both, and neither
+	// decides anything about the stream.
 	virtual void SetAnnounceContext(long playerId, long userId, const std::string& displayName,
-		const std::string& mapName) {}
+		const std::string& mapName, const std::string& lobbyName = std::string(),
+		int delaySeconds = -1) {}
 
 	/*
 	**	The relay's lobby lifecycle, from the client's side.
@@ -314,6 +323,14 @@ GencastTransport* CreateRelayGencastTransport();
 **	announcing, in which phase, and whether anything actually changed - is in one place.
 */
 void GencastAnnounceCurrentLobby();
+
+/// Whether a lobby's stream is known to be live: the lobby observer view's one question, asked
+/// the way the current mode can answer it. Live is final for the caller; Unknown means "not yet",
+/// either because the probe is in flight, because it was asked too recently, or because the mode
+/// answers by push instead (services mode: GO sends STREAM_LIVE once the relay reports /observers).
+enum class EGencastLobbyLive { Unknown = 0, Live = 1 };
+
+EGencastLobbyLive GencastPollLobbyStreamLive(const AsciiString& lobbyId);
 
 /*
 **	Mirror one lobby chat line to the relay, when direct mode has an entry to attach it to.

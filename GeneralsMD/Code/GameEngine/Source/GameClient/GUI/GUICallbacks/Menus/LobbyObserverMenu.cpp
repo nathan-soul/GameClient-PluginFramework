@@ -30,6 +30,7 @@
 #include "GameClient/LobbyObserverMenu.h"
 
 #include "Common/GameEngine.h"
+#include "Common/GencastTransport.h"	// GencastPollLobbyStreamLive: the direct-mode liveness probe
 #include "Common/LiveObserver.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/PlayerTemplate.h"
@@ -1000,11 +1001,13 @@ void LobbyObserverInit(WindowLayout* layout, void* userData)
 					s_refetchRequested.store(true);
 					break;
 				case NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::GAME_STARTING:
+					liveObserverLog("LobbyObserver: GO push GAME_STARTING lobby=%lld\n", (long long)lobbyId);
 					s_gameStartSignal.store(true);
 					break;
 				case NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::STREAM_LIVE:
 					// The relay confirmed it holds the streamer's header. This is the only
 					// liveness signal; never guess "live" from the match having started.
+					liveObserverLog("LobbyObserver: GO push STREAM_LIVE lobby=%lld\n", (long long)lobbyId);
 					s_streamLiveSignal.store(true);
 					break;
 				case NGMP_OnlineServices_LobbyInterface::ELobbyObserverEventType::GAME_STARTED:
@@ -1070,6 +1073,24 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 		beginCountdown();
 	if (s_streamLiveSignal.exchange(false))
 		onStreamLive();
+
+	// -- Liveness by polling, for the mode whose liveness is not pushed --
+	//
+	// Direct mode gets no STREAM_LIVE: GO only sends it after the relay reports the stream
+	// through /observers, which a plain relay install leaves unconfigured. The relay's own list
+	// is the truth there, so the shared probe asks it (services mode returns Unknown and the
+	// push above stays the only path). onStreamLive() keeps its own rules - it holds the join
+	// until a running countdown reaches zero.
+	if (s_phase == LobbyObserverPhase::kCountdown || s_phase == LobbyObserverPhase::kIdle ||
+		s_phase == LobbyObserverPhase::kWaiting)
+	{
+		if (GencastPollLobbyStreamLive(s_observerLobbyId) == EGencastLobbyLive::Live)
+		{
+			liveObserverLog("LobbyObserver: relay reports the stream live lobby=%s phase=%d - handing off\n",
+				s_observerLobbyId.str(), (int)s_phase);
+			onStreamLive();
+		}
+	}
 
 	// -- Countdown ticks --
 	if (s_phase == LobbyObserverPhase::kCountdown && now >= s_countdownNextMs)

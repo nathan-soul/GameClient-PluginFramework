@@ -139,7 +139,14 @@ static void liveGamesRelayFetchThread(void)
 					// finished next to the one that is running, and the viewer picks one of them.
 					row["match_id"] = it->matchId;
 					row["map_name"] = it->mapName;
-					row["name"] = it->mapName;
+					// The lobby's own title. `name` is what the shared parser reads it into (and
+					// what the password popup titles itself with), so it falls back to the map
+					// when this client or the relay never sent one.
+					row["name"] = it->lobbyName.empty() ? it->mapName : it->lobbyName;
+					// -1 is "the relay did not say": leave the key out and let the shared
+					// parser apply its default rather than rendering a bogus 0 s delay.
+					if (it->delaySeconds >= 0)
+						row["delay_seconds"] = it->delaySeconds;
 					row["state"] = (it->state == "live") ? 1 : 0;
 					// A third phase, and the one the shared parser has no GO equivalent for: the
 					// relay still serves a finished match for a while. It is watchable, but it is
@@ -377,6 +384,19 @@ static void liveGamesApplyResponse(Bool success, Int statusCode, const AsciiStri
 		// players. Append column 0 and use the row index it returns for the rest, exactly as
 		// PopulateReplayFileListbox does; a precomputed row merges the cells together.
 		text.translate(game.mapName);
+		// The host's title rides along beside the map when it says something the map does not:
+		// two lobbies on the same map are otherwise indistinguishable. GO's rows carry the
+		// lobby name too, so both sources read the same here.
+		{
+			const std::string map = game.mapName.str();
+			const std::string title = game.name.str();
+
+			if (!title.empty() && title != map)
+			{
+				std::string combined = map + " - " + title;
+				text.translate(combined.c_str());
+			}
+		}
 		const Int row = GadgetListBoxAddEntryText(s_listbox, text, rowColor, -1, 0);
 		if (row < 0)
 			continue;

@@ -307,12 +307,15 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		bool IsAvailable() const override { return !BaseUrl().empty(); }
 
 		void SetAnnounceContext(long playerId, long userId, const std::string& displayName,
-			const std::string& mapName) override
+			const std::string& mapName, const std::string& lobbyName,
+			int delaySeconds) override
 		{
 			m_playerId = playerId;
 			m_userId = userId;
 			m_displayName = displayName;
 			m_mapName = mapName;
+			m_lobbyName = lobbyName;
+			m_delaySeconds = delaySeconds;
 		}
 
 		void FetchWatchList(GencastWatchListCallback done) override
@@ -352,6 +355,11 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 						}
 					}
 					entry.mapName = lobby.value("map_name", "");
+					// The host's title for the lobby, and the lobby's minimum watch delay: both
+					// are display data the relay echoes from the announce. Absent on an older
+					// relay, which is why the delay is -1 ("not said") rather than 0.
+					entry.lobbyName = lobby.value("lobby_name", "");
+					entry.delaySeconds = lobby.value("delay_seconds", -1);
 					entry.state = lobby.value("state", "");
 					entry.hasPassword = lobby.value("has_password", false);
 
@@ -1186,6 +1194,17 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 
 			request["display_name"] = m_displayName;
 			request["map_name"] = m_mapName;
+			// Display data for the watch list: what the host called the lobby and the minimum
+			// watch delay it runs with. Omitted when GO does not have them, so the relay keeps
+			// whatever it already knew instead of blanking the row.
+			if (!m_lobbyName.empty())
+			{
+				request["lobby_name"] = m_lobbyName;
+			}
+			if (m_delaySeconds >= 0)
+			{
+				request["delay_seconds"] = m_delaySeconds;
+			}
 			// The roster now travels in slots; players is kept as an empty array because the
 			// relay still carries the field, and nothing else fills it any more.
 			request["players"] = nlohmann::json::array();
@@ -1230,6 +1249,10 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		long m_userId = 0;
 		std::string m_displayName;
 		std::string m_mapName;
+		// Display data for the watch list: the host's title and the lobby's minimum watch delay.
+		// Empty/-1 when GO does not have them; the relay then lists the map alone.
+		std::string m_lobbyName;
+		int m_delaySeconds = -1;
 	};
 }
 

@@ -21,6 +21,10 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <vector>
 
 namespace
 {
@@ -290,6 +294,8 @@ namespace
 		long userId = 0;		// GO Services user id; the relay prefers it as player identity
 		std::string displayName;
 		std::string mapName;	// GO's map name, empty until the host has picked one
+		std::string lobbyName;	// the host's title for the lobby, display only
+		int delaySeconds = -1;	// the lobby's minimum watch delay, -1 when GO has none
 	};
 
 	bool ResolveDirectLobbyIdentity(DirectLobbyIdentity& out)
@@ -369,6 +375,11 @@ namespace
 		out.userId = (long)userId;
 		out.displayName = localMember->display_name;
 		out.mapName = lobby.map_name;
+		// Display data for the watch list. The title is the host's own name for the lobby, and
+		// the delay is the lobby's minimum watch delay; both may be absent (a lobby that has
+		// not been named yet, or a GO that predates the field), which reads as empty/-1.
+		out.lobbyName = lobby.name;
+		out.delaySeconds = lobby.stream_delay_seconds;
 
 		return true;
 	}
@@ -765,8 +776,115 @@ void GencastAnnounceCurrentLobby()
 		return;
 	}
 
-	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName, mapName);
+	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName, mapName,
+		identity.lobbyName, identity.delaySeconds);
 	transport->AnnounceLobby(identity.lobbyId, state);
+}
+
+/*
+**	Whether the lobby's stream is live, answered by whichever party can know it in this mode.
+**
+**	Direct mode has no push to wait for: the relay is the only party that sees a streamer
+**	connect, and GO is only told about it through the relay's /observers report, which is
+**	unconfigured on a plain relay install. So the relay's own lobby list is asked, on a detached
+**	fetch - the transport is synchronous and must not be spent inside a frame. The answer is kept
+**	for the requesting lobby only and handed out once, so a stale probe cannot start a watch for
+**	the lobby the player has since left.
+*/
+EGencastLobbyLive GencastPollLobbyStreamLive(const AsciiString& lobbyId)
+{
+	if (!NGMP_OnlineServicesManager::Settings.Relay_Direct())
+	{
+		// Services mode answers by push: GO sends STREAM_LIVE to the lobby view once the relay
+		// has reported the stream through /observers, so nothing is polled here.
+		return EGencastLobbyLive::Unknown;
+	}
+
+	const std::string id = lobbyId.str();
+
+	static std::mutex s_mutex;
+	static std::string s_answerFor;
+	static bool s_answerLive = false;
+	static std::atomic<bool> s_running{ false };
+	static std::chrono::steady_clock::time_point s_lastProbe{};
+
+	{
+		std::scoped_lock<std::mutex> lock(s_mutex);
+
+		if (s_answerFor == id)
+		{
+			const bool live = s_answerLive;
+			s_answerFor.clear();
+
+			if (live)
+			{
+				return EGencastLobbyLive::Live;
+			}
+		}
+	}
+
+	if (s_running.load())
+	{
+		return EGencastLobbyLive::Unknown;
+	}
+
+	const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+
+	// Two seconds between probes: the list is small, and the caller runs this every frame.
+	if (s_lastProbe.time_since_epoch().count() != 0 &&
+		now - s_lastProbe < std::chrono::seconds(2))
+	{
+		return EGencastLobbyLive::Unknown;
+	}
+
+	s_lastProbe = now;
+	s_running.store(true);
+
+	std::thread([id]()
+	{
+		bool live = false;
+
+		try
+		{
+			std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+
+			if (transport)
+			{
+				transport->FetchWatchList([&](bool success, const std::vector<GencastWatchEntry>& entries)
+				{
+					if (!success)
+					{
+						return;
+					}
+
+					for (const GencastWatchEntry& entry : entries)
+					{
+						// "live" only: an ended match is watchable, but it is not a stream
+						// starting now, and the lobby hand-off is about a match that just began.
+						if (entry.lobbyId == id && entry.state == "live")
+						{
+							live = true;
+							break;
+						}
+					}
+				});
+			}
+		}
+		catch (...)
+		{
+			live = false;
+		}
+
+		{
+			std::scoped_lock<std::mutex> lock(s_mutex);
+			s_answerFor = id;
+			s_answerLive = live;
+		}
+
+		s_running.store(false);
+	}).detach();
+
+	return EGencastLobbyLive::Unknown;
 }
 
 /*
