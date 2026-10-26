@@ -709,6 +709,16 @@ void NGMP_OnlineServices_LobbyInterface::UpdateCurrentLobby_ForceReady()
 
 void NGMP_OnlineServices_LobbyInterface::SendChatMessageToCurrentLobby(UnicodeString& strChatMsgUnicode, bool bIsAction)
 {
+#if defined(GENERALS_ONLINE)
+	// Direct mode: the line a player types goes to the relay from the player's own client, the
+	// moment it is typed. Relying on the host to mirror GO's echo left every watcher of a
+	// streamer-who-is-not-the-host with a silent lobby.
+	if (!bIsAction)
+	{
+		GencastPostOwnLobbyChat(from_utf8(strChatMsgUnicode.str()));
+	}
+#endif
+
 	std::shared_ptr<WebSocket>  pWS = NGMP_OnlineServicesManager::GetWebSocket();;
 	if (pWS != nullptr)
 	{

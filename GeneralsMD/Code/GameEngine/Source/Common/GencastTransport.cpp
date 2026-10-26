@@ -1144,11 +1144,63 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 **	so the name comes off the body once it is known. The bracket is the fallback for a
 **	speaker who is not a member, which is how a pre-game observer's line arrives.
 */
+/*
+**	A lobby line this client typed itself, posted to the relay as a player line.
+**
+**	Direct mode used to learn lobby chat only from GO's echo of a line, and only the lobby *host*
+**	forwarded it. The streamer is very often not the host (a two machine test made that plain:
+**	the streaming client registered with isHost=0), so no client forwarded anything and every
+**	watcher saw a silent lobby with the players chatting in it. Whoever types the line posts it:
+**	one post per line, from the client that knows the text first.
+*/
+void GencastPostOwnLobbyChat(const std::string& message)
+{
+	if (message.empty())
+	{
+		return;
+	}
+
+	DirectLobbyIdentity identity;
+
+	if (!ResolveDirectLobbyIdentity(identity))
+	{
+		return;
+	}
+
+	std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+
+	if (transport == nullptr)
+	{
+		return;
+	}
+
+	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName,
+		identity.mapName);
+	transport->ForwardLobbyChat(identity.displayName, message);
+}
+
 void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, bool isAnnouncement)
 {
 	if (isAnnouncement)
 	{
 		return;
+	}
+
+	// Our own line was posted the moment it was typed (GencastPostOwnLobbyChat); GO's echo of it
+	// must not post it a second time.
+	{
+		NGMP_OnlineServices_LobbyInterface* ownLobby =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+		if (ownLobby != nullptr)
+		{
+			DirectLobbyIdentity mine;
+
+			if (ResolveDirectLobbyIdentity(mine) && mine.userId != 0 && fromUserId == mine.userId)
+			{
+				return;
+			}
+		}
 	}
 
 	NGMP_OnlineServices_LobbyInterface* lobbyInterface =

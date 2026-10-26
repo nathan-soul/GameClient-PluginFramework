@@ -468,6 +468,10 @@ void GencastPostWatcherChat(const AsciiString& lobbyId, const AsciiString& text)
 */
 void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, bool isAnnouncement);
 
+/// A lobby line this client typed itself. Whoever types posts: the old path only forwarded the
+/// host's copy of GO's echo, so a lobby whose host was not the streamer published no chat at all.
+void GencastPostOwnLobbyChat(const std::string& message);
+
 /*
 **	"Nothing here belongs to us any more" and "our match is over", reported to the relay.
 **
