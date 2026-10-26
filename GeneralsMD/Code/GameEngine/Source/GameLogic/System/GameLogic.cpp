@@ -4271,50 +4271,40 @@ void GameLogic::update()
 
 	const Bool isStreaming = (TheLiveStreamer != nullptr) && TheLiveStreamer->isStreaming();
 
-	if (TheNGMPGame != nullptr && TheNGMPGame->canKickOnObserversDisabled())
-	{
-		// Gencast: dropping a streaming player ends the broadcast for every watcher. Keep them
-		// in the match and black their own view out instead, so being eliminated cannot be used
-		// to keep watching for the team. Non-streamers take the vanilla path unchanged.
-		if (isStreaming)
-		{
-			if (!s_gencastNoticeShown && TheInGameUI != nullptr)
-			{
-				TheInGameUI->messageNoFormat(UnicodeString(L"You are still the gencast streamer. Leaving now ends the broadcast for every watcher."));
-				s_gencastNoticeShown = TRUE;
-			}
+	Player *gencastLocal = ThePlayerList != nullptr ? ThePlayerList->getLocalPlayer() : nullptr;
 
-			GencastSetBlackout(TRUE);
-		}
-		else
-		{
-			GencastSetBlackout(FALSE);
-			TheGameLogic->exitGame();
-		}
+	const Bool isDefeated = gencastLocal != nullptr && !gencastLocal->isPlayerObserver() &&
+		TheVictoryConditions != nullptr && TheVictoryConditions->hasSinglePlayerBeenDefeated(gencastLocal);
+
+	const Bool observersDisabled = TheNGMPGame != nullptr && !TheNGMPGame->getAllowObservers();
+
+	// The blackout is the gencast rule, not GO's kick rule: defeated AND observers disabled AND
+	// streaming. Keying it on canKickOnObserversDisabled() looked equivalent and was not - that
+	// predicate asks, for a host, whether an alive ally is left, so a solo host never satisfied
+	// it. That is the player most likely to be streaming, and the one the blackout exists for:
+	// a defeated player must not keep an eye into the match to feed his team.
+	const Bool gencastBlackout = getGameMode() == GAME_INTERNET && observersDisabled &&
+		isDefeated && isStreaming;
+
+	GencastSetBlackout(gencastBlackout);
+
+	// Said once per defeat, whatever the lobby settings: a streamer who walks out ends the
+	// broadcast for every watcher.
+	if (isStreaming && isDefeated && !s_gencastNoticeShown && TheInGameUI != nullptr)
+	{
+		TheInGameUI->messageNoFormat(UnicodeString(L"You are defeated - you are still streaming"));
+		s_gencastNoticeShown = TRUE;
 	}
-	else
+	else if (!isDefeated)
 	{
-		GencastSetBlackout(FALSE);
+		s_gencastNoticeShown = FALSE;
+	}
 
-		// Observers are still allowed, so nobody is dropped - but a defeated streamer has to be
-		// told not to walk out, or they end the broadcast by leaving. Said once per defeat.
-		Player* gencastLocal = ThePlayerList != nullptr ? ThePlayerList->getLocalPlayer() : nullptr;
-
-		const Bool isDefeated = gencastLocal != nullptr && !gencastLocal->isPlayerObserver() &&
-			TheVictoryConditions != nullptr && TheVictoryConditions->hasSinglePlayerBeenDefeated(gencastLocal);
-
-		if (isStreaming && isDefeated)
-		{
-			if (!s_gencastNoticeShown && TheInGameUI != nullptr)
-			{
-				TheInGameUI->messageNoFormat(UnicodeString(L"You are still the gencast streamer. Leaving now ends the broadcast for every watcher."));
-				s_gencastNoticeShown = TRUE;
-			}
-		}
-		else
-		{
-			s_gencastNoticeShown = FALSE;
-		}
+	// The vanilla kick keeps its own rule and never applies to a streamer: dropping them ends
+	// every watcher's feed, which is the thing the blackout exists to prevent.
+	if (!isStreaming && TheNGMPGame != nullptr && TheNGMPGame->canKickOnObserversDisabled())
+	{
+		TheGameLogic->exitGame();
 	}
 #endif
 

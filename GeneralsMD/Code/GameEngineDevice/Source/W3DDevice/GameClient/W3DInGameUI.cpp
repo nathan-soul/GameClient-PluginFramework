@@ -28,6 +28,9 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include <stdlib.h>
+#if defined(GENERALS_ONLINE)
+#include "Common/GencastBlackout.h"
+#endif
 
 #include "Common/GlobalData.h"
 #include "Common/ThingTemplate.h"
@@ -390,6 +393,14 @@ void W3DInGameUI::reset()
 //-------------------------------------------------------------------------------------------------
 void W3DInGameUI::draw()
 {
+#if defined(GENERALS_ONLINE)
+	// A blacked-out streamer gets the notice and nothing else: the HUD, the minimap and the
+	// control bar all describe a match this player may no longer watch. W3DDisplay::draw has
+	// already painted the black field and the one line of text.
+	if (TheGenCastBlackout)
+		return;
+#endif
+
 	TheDisplay->beginBatch();
 	preDraw();
 

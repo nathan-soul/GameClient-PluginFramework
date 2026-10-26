@@ -1863,9 +1863,30 @@ void W3DDisplay::draw()
 	if (TheGenCastBlackout)
 	{
 		// Gencast: this player is defeated but still streaming, so the match keeps running and
-		// the relay keeps receiving frames. Draw nothing of the world - just black - and let the
-		// HUD pass paint the notice on top.
+		// the relay keeps receiving frames. Nothing of the world is drawn - a defeated player
+		// must not keep an eye into the match for the team - and the notice is painted here
+		// rather than by the HUD pass, which is skipped for exactly the same reason.
 		TheDisplay->drawFillRect(0, 0, getWidth(), getHeight(), GameMakeColor(0, 0, 0, 255));
+
+		static DisplayString *s_notice = nullptr;
+
+		if (s_notice == nullptr && TheDisplayStringManager != nullptr)
+		{
+			s_notice = TheDisplayStringManager->newDisplayString();
+			s_notice->setText(UnicodeString(L"You are defeated - you are still streaming"));
+			s_notice->setFont(TheFontLibrary->getFont("Arial", 14, FALSE));
+		}
+
+		if (s_notice != nullptr)
+		{
+			Int noticeWidth = 0;
+			Int noticeHeight = 0;
+			s_notice->getSize(&noticeWidth, &noticeHeight);
+
+			s_notice->draw((getWidth() - noticeWidth) / 2, (getHeight() - noticeHeight) / 2,
+				GameMakeColor(255, 255, 255, 255), GameMakeColor(0, 0, 0, 255));
+		}
+
 		return;
 	}
 #endif
