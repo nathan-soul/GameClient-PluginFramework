@@ -17,7 +17,7 @@
 #include "GameNetwork/GeneralsOnline/NGMPGame.h"
 
 #include <curl/curl.h>
-#include <nlohmann/json.hpp>
+#include "GameNetwork/GeneralsOnline/json.hpp"
 
 #include <cstdio>
 #include <memory>
