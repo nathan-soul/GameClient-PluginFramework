@@ -790,42 +790,45 @@ void GencastAnnounceCurrentLobby()
 **	fetch - the transport is synchronous and must not be spent inside a frame. The answer is kept
 **	for the requesting lobby only and handed out once, so a stale probe cannot start a watch for
 **	the lobby the player has since left.
+**
+**	The answer carries the host's countdown too: a direct-mode viewer counts down from the same
+**	absolute end the lobby's own members do, where services mode is pushed GAME_STARTING by GO.
 */
-EGencastLobbyLive GencastPollLobbyStreamLive(const AsciiString& lobbyId)
+bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamState& out)
 {
+	out = GencastLobbyStreamState();
+
 	if (!NGMP_OnlineServicesManager::Settings.Relay_Direct())
 	{
-		// Services mode answers by push: GO sends STREAM_LIVE to the lobby view once the relay
-		// has reported the stream through /observers, so nothing is polled here.
-		return EGencastLobbyLive::Unknown;
+		// Services mode answers by push: GO sends GAME_STARTING and STREAM_LIVE to the lobby
+		// view once the relay has reported the stream through /observers, so nothing is polled.
+		return false;
 	}
 
 	const std::string id = lobbyId.str();
 
 	static std::mutex s_mutex;
 	static std::string s_answerFor;
-	static bool s_answerLive = false;
+	static GencastLobbyStreamState s_answer;
+	static bool s_answered = false;
 	static std::atomic<bool> s_running{ false };
 	static std::chrono::steady_clock::time_point s_lastProbe{};
 
 	{
 		std::scoped_lock<std::mutex> lock(s_mutex);
 
-		if (s_answerFor == id)
+		if (s_answered && s_answerFor == id)
 		{
-			const bool live = s_answerLive;
+			out = s_answer;
 			s_answerFor.clear();
-
-			if (live)
-			{
-				return EGencastLobbyLive::Live;
-			}
+			s_answered = false;
+			return true;
 		}
 	}
 
 	if (s_running.load())
 	{
-		return EGencastLobbyLive::Unknown;
+		return false;
 	}
 
 	const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
@@ -834,7 +837,7 @@ EGencastLobbyLive GencastPollLobbyStreamLive(const AsciiString& lobbyId)
 	if (s_lastProbe.time_since_epoch().count() != 0 &&
 		now - s_lastProbe < std::chrono::seconds(2))
 	{
-		return EGencastLobbyLive::Unknown;
+		return false;
 	}
 
 	s_lastProbe = now;
@@ -842,7 +845,7 @@ EGencastLobbyLive GencastPollLobbyStreamLive(const AsciiString& lobbyId)
 
 	std::thread([id]()
 	{
-		bool live = false;
+		GencastLobbyStreamState answer;
 
 		try
 		{
@@ -859,32 +862,38 @@ EGencastLobbyLive GencastPollLobbyStreamLive(const AsciiString& lobbyId)
 
 					for (const GencastWatchEntry& entry : entries)
 					{
-						// "live" only: an ended match is watchable, but it is not a stream
-						// starting now, and the lobby hand-off is about a match that just began.
-						if (entry.lobbyId == id && entry.state == "live")
+						if (entry.lobbyId != id)
 						{
-							live = true;
-							break;
+							continue;
 						}
+
+						// "live" only means a stream is running: an ended match is watchable but
+						// is not a stream starting now, and the lobby hand-off is about a match
+						// that just began.
+						answer.live = entry.state == "live";
+						answer.countdownStarted = entry.countdownStarted;
+						answer.countdownEndsAtUnixMs = entry.countdownEndsAtUnixMs;
+						break;
 					}
 				});
 			}
 		}
 		catch (...)
 		{
-			live = false;
+			answer = GencastLobbyStreamState();
 		}
 
 		{
 			std::scoped_lock<std::mutex> lock(s_mutex);
 			s_answerFor = id;
-			s_answerLive = live;
+			s_answer = answer;
+			s_answered = true;
 		}
 
 		s_running.store(false);
 	}).detach();
 
-	return EGencastLobbyLive::Unknown;
+	return false;
 }
 
 /*

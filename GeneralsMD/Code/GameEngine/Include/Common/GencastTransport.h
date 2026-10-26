@@ -56,6 +56,11 @@ struct GencastWatchEntry
 	// The lobby's minimum watch delay in seconds, or -1 when the relay did not say. Display
 	// only: the delay the relay applies arrives on the ROLE frame, not from here.
 	int delaySeconds = -1;
+	// The host's match-start countdown, as the relay mirrors it from the lobby's announce. In
+	// direct mode this is the only source: GO's own observer push needs the /observers report,
+	// which a plain relay install leaves unconfigured.
+	bool countdownStarted = false;
+	long long countdownEndsAtUnixMs = 0;
 	std::string playersJson;
 	// "pregame" while the players are seating, "live" while the match runs, "ended" during the
 	// relay's post-game hold: still watchable, no longer a lobby.
@@ -325,12 +330,19 @@ GencastTransport* CreateRelayGencastTransport();
 void GencastAnnounceCurrentLobby();
 
 /// Whether a lobby's stream is known to be live: the lobby observer view's one question, asked
-/// the way the current mode can answer it. Live is final for the caller; Unknown means "not yet",
+/// the way the current mode can answer it. Live is final for the caller; false means "not yet",
 /// either because the probe is in flight, because it was asked too recently, or because the mode
 /// answers by push instead (services mode: GO sends STREAM_LIVE once the relay reports /observers).
-enum class EGencastLobbyLive { Unknown = 0, Live = 1 };
+struct GencastLobbyStreamState
+{
+	bool live = false;                  ///< the relay says a stream is running in this lobby
+	bool countdownStarted = false;      ///< the host's match-start countdown is running
+	long long countdownEndsAtUnixMs = 0;///< wall-clock end of that countdown, 0 when unknown
+};
 
-EGencastLobbyLive GencastPollLobbyStreamLive(const AsciiString& lobbyId);
+/// One non-blocking step of that question. Returns true when a fresh answer was available and
+/// fills <paramref name="out"/>; false while the probe is still in flight or was just made.
+bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamState& out);
 
 /*
 **	Mirror one lobby chat line to the relay, when direct mode has an entry to attach it to.

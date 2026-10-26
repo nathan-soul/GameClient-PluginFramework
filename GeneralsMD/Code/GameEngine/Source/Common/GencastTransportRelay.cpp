@@ -360,6 +360,10 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 					// relay, which is why the delay is -1 ("not said") rather than 0.
 					entry.lobbyName = lobby.value("lobby_name", "");
 					entry.delaySeconds = lobby.value("delay_seconds", -1);
+					// The host's match-start countdown, mirrored by the relay. In direct mode this
+					// is the only source: GO's observer push needs the /observers report.
+					entry.countdownStarted = lobby.value("countdown_started", false);
+					entry.countdownEndsAtUnixMs = lobby.value("countdown_ends_at_unix_ms", 0LL);
 					entry.state = lobby.value("state", "");
 					entry.hasPassword = lobby.value("has_password", false);
 

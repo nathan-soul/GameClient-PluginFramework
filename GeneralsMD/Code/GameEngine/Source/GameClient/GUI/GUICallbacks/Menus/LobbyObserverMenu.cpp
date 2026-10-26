@@ -30,7 +30,8 @@
 #include "GameClient/LobbyObserverMenu.h"
 
 #include "Common/GameEngine.h"
-#include "Common/GencastTransport.h"	// GencastPollLobbyStreamLive: the direct-mode liveness probe
+#include "Common/GencastTransport.h"	// GencastPollLobbyStreamState: the direct-mode liveness probe
+#include <chrono>			// beginCountdownFromRelayEnd: wall clock vs. the host's absolute end
 #include "Common/LiveObserver.h"
 #include "Common/MultiplayerSettings.h"
 #include "Common/PlayerTemplate.h"
@@ -444,6 +445,34 @@ static void beginCountdown(void)
 		return;
 
 	s_countdownValue = 5;
+	s_countdownNextMs = timeGetTime() + 1000;
+	s_gameStartedAtMs = timeGetTime();
+	s_phase = LobbyObserverPhase::kCountdown;
+}
+
+/// Start the same countdown the lobby's own members see, seeded from the host's absolute end time
+/// instead of a fixed five. Direct mode carries that end on the relay's list because GO's observer
+/// push (GAME_STARTING) needs the /observers report, which a plain relay install does not send.
+static void beginCountdownFromRelayEnd(long long endsAtUnixMs)
+{
+	if (s_phase != LobbyObserverPhase::kIdle || s_lobbyGone)
+		return;
+
+	const long long nowMs = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::system_clock::now().time_since_epoch()).count();
+	const long long remainingMs = endsAtUnixMs - nowMs;
+
+	// Already over, or so far away that it is not this view's countdown to run: the hand-off
+	// follows from the stream going live instead.
+	if (remainingMs <= 0 || remainingMs > 15000)
+		return;
+
+	Int seconds = (Int)((remainingMs + 999) / 1000);
+
+	if (seconds < 1)
+		seconds = 1;
+
+	s_countdownValue = seconds;
 	s_countdownNextMs = timeGetTime() + 1000;
 	s_gameStartedAtMs = timeGetTime();
 	s_phase = LobbyObserverPhase::kCountdown;
@@ -1084,11 +1113,22 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 	if (s_phase == LobbyObserverPhase::kCountdown || s_phase == LobbyObserverPhase::kIdle ||
 		s_phase == LobbyObserverPhase::kWaiting)
 	{
-		if (GencastPollLobbyStreamLive(s_observerLobbyId) == EGencastLobbyLive::Live)
+		GencastLobbyStreamState relayState;
+
+		if (GencastPollLobbyStreamState(s_observerLobbyId, relayState))
 		{
-			liveObserverLog("LobbyObserver: relay reports the stream live lobby=%s phase=%d - handing off\n",
-				s_observerLobbyId.str(), (int)s_phase);
-			onStreamLive();
+			if (relayState.live)
+			{
+				liveObserverLog("LobbyObserver: relay reports the stream live lobby=%s phase=%d - handing off\n",
+					s_observerLobbyId.str(), (int)s_phase);
+				onStreamLive();
+			}
+			else if (relayState.countdownStarted && relayState.countdownEndsAtUnixMs > 0)
+			{
+				// The host is counting down and GO did not push it to this viewer: run the same
+				// countdown here, from the host's own end time.
+				beginCountdownFromRelayEnd(relayState.countdownEndsAtUnixMs);
+			}
 		}
 	}
 
