@@ -19,6 +19,11 @@ on:
         type: boolean
         required: false
         default: false
+  # Temporary: GitHub only dispatches a workflow that is already registered, and this file has
+  # never lived on the default branch. A push to this branch registers and runs it.
+  push:
+    branches:
+      - build/static-vcpkg-deps
 
 permissions:
   contents: read
