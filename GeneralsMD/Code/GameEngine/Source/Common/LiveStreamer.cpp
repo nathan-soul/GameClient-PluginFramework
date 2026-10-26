@@ -370,6 +370,17 @@ void LiveStreamer::init()
 
 void LiveStreamer::close()
 {
+	// The streamer stopping is the end of the stream, whichever way it stopped: the recorder's own
+	// finish, the player leaving the match, or a restart. The recorder posts its own end on a normal
+	// finish and clears the announce cache, so this only fires when nothing else did - which is
+	// exactly the leave-match case, where the relay used to wait out its whole reconnect grace.
+	//
+	// A crash or a lost connection never reaches here; that is what the relay's grace is for.
+	if (m_isStreaming.load() || m_isBackup.load())
+	{
+		GencastEndCurrentMatch("streamer-left");
+	}
+
 	m_shouldRun.store(false);
 
 	if (m_networkThread.joinable())

@@ -68,6 +68,30 @@ struct GencastWatchEntry
 	bool hasPassword = false;
 };
 
+/// One lobby chat line as the relay hands it to a watcher. `kind` is "player" for the host's
+/// players and "watcher" for another viewer - the same two lanes GO has.
+struct GencastLobbyChat
+{
+	std::string from;
+	std::string text;
+	std::string kind;
+	long long atUnixMs = 0;
+};
+
+/// One answer of the pregame feed. Everything the lobby view needs to look like the host's own
+/// lobby: the phase, the countdown, the title, the watch delay, and the chat since the last answer.
+struct GencastPregameEvents
+{
+	bool live = false;
+	bool countdownStarted = false;
+	long long countdownEndsAtUnixMs = 0;
+	std::string lobbyName;
+	int delaySeconds = -1;
+	int startsInSeconds = -1;
+	std::vector<GencastLobbyChat> chat;
+	long long next = 0;
+};
+
 struct GencastWatchSession
 {
 	bool success = false;
@@ -77,6 +101,12 @@ struct GencastWatchSession
 	std::string wsUrl;      ///< the media socket the watcher connects to
 	std::string sessionUrl; ///< the relay's pre-game session feed (/direct/session/{id})
 	std::string streamUrl;
+	/// The polling feed of a lobby that has not started yet (/direct/pregame/{id}/events). Non-empty
+	/// exactly when the join named a pregame session instead of a watch session.
+	std::string pregameUrl;
+	/// False when the relay answered with a pregame session: nothing to watch yet, and the same
+	/// session becomes the watch session when the stream attaches.
+	bool live = true;
 	std::string errorMessage;
 	// 409: this account already watches this match, so no session was issued. The two fields
 	// are the relay's own account of that other connection, and they exist so the player can be
@@ -197,6 +227,15 @@ public:
 	//
 	// kickExisting asks the relay to drop a session this account already has on this match
 	// (409 -> retry). Only ever set after the player confirmed that takeover.
+	/// The pregame feed, for a client with no push lane: one request brings the lobby as the host's
+	/// client announced it, every chat line after `since`, and the cursor to ask from next time.
+	/// Returns false when the feed is not available (services mode, no session, or a refusal).
+	virtual bool FetchPregameEvents(const std::string& eventsUrl, long long since,
+		GencastPregameEvents& out)
+	{
+		return false;
+	}
+
 	virtual GencastAttemptResult AttemptWatchSession(const std::string& lobbyId,
 		const std::string& password, const std::string& matchId, uint64_t watcherId,
 		bool kickExisting) = 0;
@@ -338,6 +377,18 @@ struct GencastLobbyStreamState
 	bool live = false;                  ///< the relay says a stream is running in this lobby
 	bool countdownStarted = false;      ///< the host's match-start countdown is running
 	long long countdownEndsAtUnixMs = 0;///< wall-clock end of that countdown, 0 when unknown
+
+	/// True when the answer came from the relay's pregame feed rather than the lobby list: the
+	/// rest of the fields are then the lobby as the host's own client sees it (slots, title, delay,
+	/// chat), which is what the lobby view renders in direct mode.
+	bool fromFeed = false;
+
+	std::string lobbyName;              ///< the host's lobby title, empty when never said
+	int delaySeconds = -1;              ///< the lobby's minimum watch delay, -1 when never said
+	int startsInSeconds = -1;           ///< seconds until playback, -1 when not live
+
+	/// Chat lines that arrived since the previous answer, oldest first. Drained by the view.
+	std::vector<GencastLobbyChat> chat;
 };
 
 /// One non-blocking step of that question. Returns true when a fresh answer was available and

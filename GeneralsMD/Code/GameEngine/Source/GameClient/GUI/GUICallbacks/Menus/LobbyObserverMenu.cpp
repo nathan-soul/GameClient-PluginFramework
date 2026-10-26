@@ -116,7 +116,11 @@ static Bool s_warnedNoStream = FALSE;
 static Bool s_streamNotStartedShown = FALSE;	// amber "not started yet" line printed once
 static Bool s_joinQueued = FALSE;
 static UnsignedInt s_joinQueuedAtMs = 0;
-static Bool s_streamLivePending = FALSE;	// stream-live arrived mid-countdown; join at 0
+static Bool s_streamLivePending = FALSE;
+// What the relay feed has already told this view, so a status line is shown once rather than on
+// every probe that repeats it.
+static int s_relayDelayShown = -2;
+static int s_relayStartsInShown = -2;	// stream-live arrived mid-countdown; join at 0
 static Bool s_lobbyGone = FALSE;
 static UnsignedInt s_lobbyGoneAtMs = 0;
 static Bool s_loadingStatusShown = FALSE;	// "Loading game..." printed once, pre-roll
@@ -1117,6 +1121,46 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 
 		if (GencastPollLobbyStreamState(s_observerLobbyId, relayState))
 		{
+			// The host's lobby as the relay sees it: title, watch delay and chat. Only the feed
+			// carries these in direct mode - the lobby list has no chat - so a viewer without a
+			// feed (a passworded group, before the password is typed) simply gets nothing here and
+			// still watches.
+			if (relayState.fromFeed)
+			{
+				if (relayState.delaySeconds >= 0 && relayState.delaySeconds != s_relayDelayShown)
+				{
+					s_relayDelayShown = relayState.delaySeconds;
+
+					UnicodeString notice;
+					notice.format(L"Watch delay: %ds", relayState.delaySeconds);
+					observerChat(notice, GameMakeColor(255, 194, 15, 255));
+				}
+
+				if (relayState.live && relayState.startsInSeconds > 0 &&
+					relayState.startsInSeconds != s_relayStartsInShown)
+				{
+					s_relayStartsInShown = relayState.startsInSeconds;
+
+					UnicodeString notice;
+					notice.format(L"Stream starts in %ds", relayState.startsInSeconds);
+					observerChat(notice, GameMakeColor(255, 194, 15, 255));
+				}
+
+				for (const GencastLobbyChat& line : relayState.chat)
+				{
+					UnicodeString speaker(from_utf8(line.from).c_str());
+					UnicodeString body(from_utf8(line.text).c_str());
+					UnicodeString text;
+
+					// Same shape GO's own lobby chat uses, so a viewer cannot tell the two lanes
+					// apart. Watchers are dimmed: they are not in the match.
+					text.format(L"[%s] %s", speaker.str(), body.str());
+					observerChat(text, line.kind == "watcher"
+						? GameMakeColor(180, 180, 180, 255)
+						: GameMakeColor(255, 255, 255, 255));
+				}
+			}
+
 			if (relayState.live)
 			{
 				liveObserverLog("LobbyObserver: relay reports the stream live lobby=%s phase=%d - handing off\n",

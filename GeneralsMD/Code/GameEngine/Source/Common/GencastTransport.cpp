@@ -177,6 +177,18 @@ void GencastTransport::RequestWatchSession(const std::string& lobbyId,
 		switch (attempt.kind)
 		{
 			case EGencastAttempt::Success:
+
+				// A pregame answer is not a session the observer can watch: the relay lists the
+				// lobby but the streamer has not attached, and a watch socket would be refused.
+				// Treated as "not ready yet" and retried inside this call's window, exactly like a
+				// 404 - the same wait, whichever way the relay spells it.
+				if (attempt.wsUrl.empty())
+				{
+					GencastDebugLog("gencast: join lobby=%s -> pregame session (%s), waiting for the stream",
+						lobbyId.c_str(), attempt.pregameUrl.empty() ? "no url" : attempt.pregameUrl.c_str());
+					break;
+				}
+
 				session.success = true;
 				session.sessionId = attempt.sessionId;
 				session.wsUrl = attempt.wsUrl;
@@ -298,7 +310,51 @@ namespace
 		int delaySeconds = -1;	// the lobby's minimum watch delay, -1 when GO has none
 	};
 
-	bool ResolveDirectLobbyIdentity(DirectLobbyIdentity& out)
+	namespace
+{
+	// The match this client announced, kept past the GO lobby it came from.
+	//
+	// Leaving a match tears the lobby down first, so resolving the identity again at that moment
+	// fails - IsInLobby() is already false - and the relay was never told the stream was over. That
+	// is why a watcher sat on the last frame until the relay's reconnect grace ran out. The match a
+	// client announced is exactly the match whose stream is ending, so it is remembered here.
+	struct AnnouncedMatch
+	{
+		std::mutex mutex;
+		bool valid = false;
+		DirectLobbyIdentity identity;
+	};
+
+	AnnouncedMatch s_announcedMatch;
+
+	void RememberAnnouncedMatch(const DirectLobbyIdentity& identity)
+	{
+		std::lock_guard<std::mutex> lock(s_announcedMatch.mutex);
+		s_announcedMatch.valid = true;
+		s_announcedMatch.identity = identity;
+	}
+
+	bool CachedAnnouncedMatch(DirectLobbyIdentity& out)
+	{
+		std::lock_guard<std::mutex> lock(s_announcedMatch.mutex);
+
+		if (!s_announcedMatch.valid)
+		{
+			return false;
+		}
+
+		out = s_announcedMatch.identity;
+		return true;
+	}
+
+	void ForgetAnnouncedMatch()
+	{
+		std::lock_guard<std::mutex> lock(s_announcedMatch.mutex);
+		s_announcedMatch.valid = false;
+	}
+}
+
+bool ResolveDirectLobbyIdentity(DirectLobbyIdentity& out)
 	{
 		if (!DirectModeConfigured())
 		{
@@ -779,6 +835,10 @@ void GencastAnnounceCurrentLobby()
 	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName, mapName,
 		identity.lobbyName, identity.delaySeconds);
 	transport->AnnounceLobby(identity.lobbyId, state);
+
+	// The relay now lists this match. Remember which one, so ending the stream does not depend on
+	// the GO lobby still existing at that moment.
+	RememberAnnouncedMatch(identity);
 }
 
 /*
@@ -843,6 +903,12 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamS
 	s_lastProbe = now;
 	s_running.store(true);
 
+	// The feed belongs to one session, so its url and cursor are kept per lobby. They are reset
+	// whenever the lobby changes: a cursor from another game would silently swallow this one's chat.
+	static std::string s_feedLobby;
+	static std::string s_feedUrl;
+	static long long s_feedSince = 0;
+
 	std::thread([id]()
 	{
 		GencastLobbyStreamState answer;
@@ -876,6 +942,80 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, GencastLobbyStreamS
 						break;
 					}
 				});
+
+				// The lobby as the host's own client sees it - slots, title, delay, chat - comes
+				// from the relay's pregame feed. It needs a session, which the join hands out for a
+				// lobby that has not started; a lobby whose group wants a password answers 401 here
+				// (the password prompt comes later, at watch time) and the list above stands alone.
+				if (s_feedLobby != id)
+				{
+					s_feedUrl.clear();
+					s_feedSince = 0;
+				}
+
+				if (s_feedUrl.empty())
+				{
+					uint64_t watcherId = 0;
+					NGMP_OnlineServices_AuthInterface* auth =
+						NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
+
+					if (auth != nullptr && auth->GetUserID() > 0)
+					{
+						watcherId = (uint64_t)auth->GetUserID();
+					}
+
+					if (watcherId != 0)
+					{
+						// The plain join, not RequestWatchSession: this one wants the pregame answer
+						// and must not sit in that call's 20 s retry window on a lobby that has
+						// nothing to watch yet.
+						const GencastAttemptResult joined =
+							transport->AttemptWatchSession(id, "", "", watcherId, false);
+
+						s_feedLobby = id;
+
+						if (joined.kind == EGencastAttempt::Success && !joined.pregameUrl.empty())
+						{
+							s_feedUrl = joined.pregameUrl;
+							s_feedSince = 0;
+
+							GencastDebugLog("gencast: pregame feed for lobby=%s at %s",
+								id.c_str(), s_feedUrl.c_str());
+						}
+						else
+						{
+							// Remembered as "no feed" for this lobby so every probe does not re-ask:
+							// the answer will not change without the password.
+							GencastDebugLog("gencast: no pregame feed for lobby=%s kind=%d status=%d",
+								id.c_str(), (int)joined.kind, joined.httpStatus);
+						}
+					}
+				}
+
+				GencastPregameEvents events;
+
+				if (!s_feedUrl.empty() && s_feedLobby == id &&
+					transport->FetchPregameEvents(s_feedUrl, s_feedSince, events))
+				{
+					answer.fromFeed = true;
+					answer.lobbyName = events.lobbyName;
+					answer.delaySeconds = events.delaySeconds;
+					answer.startsInSeconds = events.startsInSeconds;
+					answer.chat = events.chat;
+
+					if (events.live)
+					{
+						answer.live = true;
+					}
+
+					if (events.countdownStarted)
+					{
+						answer.countdownStarted = true;
+						answer.countdownEndsAtUnixMs = events.countdownEndsAtUnixMs;
+					}
+
+					s_feedSince = events.next;
+				}
 			}
 		}
 		catch (...)
@@ -1034,7 +1174,16 @@ void GencastEndCurrentMatch(const char* reason)
 
 	if (!ResolveDirectLobbyIdentity(identity))
 	{
-		return;
+		// Leaving the match tears the GO lobby down first, so the identity that was good at
+		// announce time is the only one left. Ending the stream must not depend on still being in
+		// the lobby: that is the moment the streamer is leaving it.
+		if (!CachedAnnouncedMatch(identity))
+		{
+			return;
+		}
+
+		GencastDebugLog("gencast: end match lobby=%s match=%llu from the announce cache (%s)",
+			identity.lobbyId.c_str(), (unsigned long long)identity.matchId, reason ? reason : "?");
 	}
 
 	std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
@@ -1047,6 +1196,10 @@ void GencastEndCurrentMatch(const char* reason)
 	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName,
 		identity.mapName);
 	transport->EndMatch(identity.lobbyId, identity.matchId, reason);
+
+	// One end per match: the streamer's close() runs right after the recorder's stop in a normal
+	// finish, and must not post a second one.
+	ForgetAnnouncedMatch();
 }
 
 /*

@@ -751,6 +751,13 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 				result.sessionUrl = body.value("ws_url", "");
 				result.streamUrl = body.value("stream_url", "");
 
+				// A lobby that has not started yet answers with a pregame session: the lobby view
+				// is fed from it, and the same session becomes the watch session when the stream
+				// attaches. An older relay sends neither field, which reads as "live" - the shape it
+				// has always had.
+				result.pregameUrl = body.value("pregame_url", "");
+				result.live = body.value("live", true);
+
 				if (!result.streamUrl.empty())
 				{
 					result.wsUrl = ToWebSocketUrl(result.streamUrl);
@@ -763,18 +770,91 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 				return result;
 			}
 
-			if (result.wsUrl.empty())
+			if (result.wsUrl.empty() && result.pregameUrl.empty())
 			{
 				result.kind = EGencastAttempt::Failed;
 				result.errorMessage = "The relay returned no stream address.";
 				return result;
 			}
 
-			GencastDebugLog("gencast: join lobby=%s -> session=%s ws=%s",
-				lobbyId.c_str(), result.sessionId.c_str(), result.wsUrl.c_str());
+			GencastDebugLog("gencast: join lobby=%s -> session=%s ws=%s pregame=%s live=%s",
+				lobbyId.c_str(), result.sessionId.c_str(), result.wsUrl.c_str(),
+				result.pregameUrl.c_str(), result.live ? "yes" : "no");
 
 			result.kind = EGencastAttempt::Success;
 			return result;
+		}
+
+		/// <summary>
+		/// One request of the pregame feed: the lobby as the host announced it, every chat line after
+		/// the caller's cursor, and the cursor to ask from next time.
+		/// </summary>
+		bool FetchPregameEvents(const std::string& eventsUrl, long long since,
+			GencastPregameEvents& out) override
+		{
+			if (eventsUrl.empty())
+			{
+				return false;
+			}
+
+			char query[64];
+			snprintf(query, sizeof(query), "?since=%lld", since);
+
+			HttpResponse response;
+
+			if (!Perform(BaseUrl() + eventsUrl + query, nullptr, response) || response.status != 200)
+			{
+				return false;
+			}
+
+			try
+			{
+				const nlohmann::json body = nlohmann::json::parse(response.body);
+
+				if (!body.contains("snapshot"))
+				{
+					return false;
+				}
+
+				const nlohmann::json& snapshot = body["snapshot"];
+
+				out.live = snapshot.value("phase", std::string("pregame")) == "live";
+				out.countdownStarted = snapshot.value("countdown_started", false);
+				out.countdownEndsAtUnixMs = snapshot.value("countdown_ends_at_unix_ms", 0LL);
+				out.lobbyName = snapshot.value("lobby_name", std::string());
+				out.delaySeconds = snapshot.value("delay_seconds", -1);
+				out.next = body.value("next", 0LL);
+
+				if (!out.live)
+				{
+					out.startsInSeconds = -1;
+				}
+
+				out.chat.clear();
+
+				if (body.contains("chat") && body["chat"].is_array())
+				{
+					for (const nlohmann::json& line : body["chat"])
+					{
+						GencastLobbyChat chat;
+						chat.from = line.value("from", std::string());
+						chat.text = line.value("text", std::string());
+						chat.kind = line.value("kind", std::string("player"));
+						chat.atUnixMs = line.value("at_unix_ms", 0LL);
+
+						if (!chat.text.empty())
+						{
+							out.chat.push_back(chat);
+						}
+					}
+				}
+			}
+			catch (const nlohmann::json::exception&)
+			{
+				return false;
+			}
+
+			return true;
 		}
 
 		void RegisterStream(const std::string& lobbyId, EGencastStreamState state,
