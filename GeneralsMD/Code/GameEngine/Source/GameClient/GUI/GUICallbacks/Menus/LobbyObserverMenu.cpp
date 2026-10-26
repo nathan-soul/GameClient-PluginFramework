@@ -637,13 +637,14 @@ static void renderLobby(void)
 			GadgetComboBoxReset(s_slotCombos[i]);
 			if (!s_slotNames[i].isEmpty())
 			{
-				// The ready mark rides the label: the stock lobby draws it as an icon beside the name,
-				// and this view has no gadget for that, so the tick goes where a viewer will see it.
+				// The ready mark rides the label, in ASCII: the stock lobby draws an icon beside the
+				// name and this view has no gadget for it (the WND is packed, so none can be bound
+				// by name), but a tick character is not in the lobby font and came out as mojibake.
 				UnicodeString label = s_slotNames[i];
 
 				if (s_slotReady[i])
 				{
-					label.concat(UnicodeString(L" ✓"));
+					label.concat(UnicodeString(L" (ready)"));
 				}
 
 				GadgetComboBoxAddEntry(s_slotCombos[i], label, GameMakeColor(255, 255, 255, 255));
@@ -1377,7 +1378,12 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 	if (s_gameStartedAtMs != 0 && !s_joinQueued &&
 		s_lobbyState == 1 /* ELobbyState::INGAME */ && !s_isStreaming)
 	{
-		if ((now - s_gameStartedAtMs) > 60000)
+		// A watcher still loading the map has not had the chance to see the stream yet, and the
+		// load can outlast a minute on a cold start. Saying "not started" there is wrong twice
+		// over: it is not late, and LEAVE is not the answer.
+		const Bool stillLoadingMap = (TheGameLogic != nullptr) && TheGameLogic->isLoadingMap();
+
+		if (!stillLoadingMap && (now - s_gameStartedAtMs) > 90000)
 		{
 			if (!s_warnedNoStream)
 			{
@@ -1386,7 +1392,7 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 					GameMakeColor(255, 120, 120, 255));
 			}
 		}
-		else if ((now - s_gameStartedAtMs) > 20000 && !s_streamNotStartedShown)
+		else if (!stillLoadingMap && (now - s_gameStartedAtMs) > 30000 && !s_streamNotStartedShown)
 		{
 			s_streamNotStartedShown = TRUE;
 			observerChat(UnicodeString(L"The stream has not started yet - waiting for the host to start streaming"),

@@ -123,6 +123,7 @@ struct QuitGameException {};
 
 #if defined(GENERALS_ONLINE)
 #include "Common/GencastBlackout.h"
+#include "Common/GencastClientLog.h"
 #include "Common/LiveStreamer.h"
 #endif
 
@@ -4287,6 +4288,23 @@ void GameLogic::update()
 		isDefeated && isStreaming;
 
 	GencastSetBlackout(gencastBlackout);
+
+	// One line per change, naming every input. The last report said only "still frozen"; the
+	// client could not say which half of the predicate was false, so the next one will.
+	{
+		static int s_lastLogged = -1;
+
+		const int state = (gencastBlackout ? 8 : 0) | (observersDisabled ? 4 : 0) |
+			(isDefeated ? 2 : 0) | (isStreaming ? 1 : 0);
+
+		if (state != s_lastLogged)
+		{
+			s_lastLogged = state;
+			GencastDebugLog("gencast: blackout internet=%d observers_disabled=%d defeated=%d streaming=%d -> %d",
+				(int)(getGameMode() == GAME_INTERNET), (int)observersDisabled, (int)isDefeated,
+				(int)isStreaming, (int)gencastBlackout);
+		}
+	}
 
 	// Said once per defeat, whatever the lobby settings: a streamer who walks out ends the
 	// broadcast for every watcher.

@@ -940,9 +940,11 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 
 	const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 
-	// Two seconds between probes: the list is small, and the caller runs this every frame.
+	// Four probes a second. Two seconds was the first number and it is what "the lobby feels
+	// dead" was: a 5 s countdown polled at 2 s intervals lands late or not at all, and chat
+	// arrives in lumps. The running flag still keeps one request in flight at a time.
 	if (s_lastProbe.time_since_epoch().count() != 0 &&
-		now - s_lastProbe < std::chrono::seconds(2))
+		now - s_lastProbe < std::chrono::milliseconds(250))
 	{
 		return false;
 	}

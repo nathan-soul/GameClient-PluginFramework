@@ -1,4 +1,7 @@
 #include "GameNetwork/GeneralsOnline/NGMPGame.h"
+#if defined(GENERALS_ONLINE)
+#include "Common/GencastTransport.h"
+#endif
 #include "GameLogic/VictoryConditions.h"
 #include "Common/PlayerList.h"
 #include "GameLogic/GameLogic.h"
@@ -609,6 +612,14 @@ void NGMPGame::StartCountdown()
 	{
 		pWS->SendData_CountdownStarted();
 	}
+
+#if defined(GENERALS_ONLINE)
+	// Tell the relay the countdown began, right now. The announce body reads the countdown from
+	// this object, but announces are otherwise sent when the lobby changes - and a five second
+	// countdown between two of those is invisible to every watcher, which is why direct mode had
+	// no countdown at all while Services pushed one.
+	GencastAnnounceCurrentLobby();
+#endif
 }
 
 Bool NGMPGame::canKickOnObserversDisabled()
