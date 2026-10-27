@@ -474,9 +474,17 @@ static void beginCountdownFromRelayEnd(long long endsAtUnixMs)
 	const long long remainingMs = endsAtUnixMs - nowMs;
 
 	// Already over, or so far away that it is not this view's countdown to run: the hand-off
-	// follows from the stream going live instead.
+	// follows from the stream going live instead. Not silent - a countdown that never appears is
+	// indistinguishable from one that never arrived, and this line is the difference.
 	if (remainingMs <= 0 || remainingMs > 15000)
+	{
+		GencastDebugLog("gencast: relay countdown ignored ends_in_ms=%lld (window is 0..15000)",
+			(long long)remainingMs);
+
 		return;
+	}
+
+	GencastDebugLog("gencast: relay countdown starting in %lld ms", (long long)remainingMs);
 
 	Int seconds = (Int)((remainingMs + 999) / 1000);
 

@@ -1354,8 +1354,25 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 			{
 				// The length the host's own on-screen timer counts down, not a guess: the same
 				// GetTotalCountdownDuration() WOLGameSetupMenu subtracts from the start time.
-				request["countdown_ends_at_unix_ms"] = TheNGMPGame->GetCountdownStartTime() +
-					(int64_t)TheNGMPGame->GetTotalCountdownDuration() * 1000;
+				//
+				// The start time itself is a utc_clock stamp, and utc_clock counts leap seconds
+				// while the Unix epoch does not: on this toolchain it runs exactly 27 s ahead of
+				// system_clock (measured, 2026-10-27). A watcher comparing it to its own wall
+				// clock therefore saw a five second countdown as 32 s away, and refused to run it -
+				// which is why direct mode had no countdown at all. Convert once, here, where the
+				// number leaves the game, and let the field name stay true.
+				static const int64_t kUtcToUnixSkewMs = []() -> int64_t
+				{
+					const int64_t sys = std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::system_clock::now().time_since_epoch()).count();
+					const int64_t utc = std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::utc_clock::now().time_since_epoch()).count();
+
+					return utc - sys;
+				}();
+
+				request["countdown_ends_at_unix_ms"] = TheNGMPGame->GetCountdownStartTime() -
+					kUtcToUnixSkewMs + (int64_t)TheNGMPGame->GetTotalCountdownDuration() * 1000;
 			}
 
 			try
