@@ -1352,6 +1352,7 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 
 			if (countdownStarted)
 			{
+
 				// The length the host's own on-screen timer counts down, not a guess: the same
 				// GetTotalCountdownDuration() WOLGameSetupMenu subtracts from the start time.
 				//
@@ -1371,8 +1372,17 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 					return utc - sys;
 				}();
 
-				request["countdown_ends_at_unix_ms"] = TheNGMPGame->GetCountdownStartTime() -
+				const int64_t endsAtUnixMs = TheNGMPGame->GetCountdownStartTime() -
 					kUtcToUnixSkewMs + (int64_t)TheNGMPGame->GetTotalCountdownDuration() * 1000;
+
+				request["countdown_ends_at_unix_ms"] = endsAtUnixMs;
+
+				// One line per announce that carries a countdown: the host's half of the chain.
+				// Without it a watcher that shows nothing cannot be told apart from a host that
+				// never said anything, which is exactly how the last round was spent.
+				GencastDebugLog("gencast: announce countdown ends_in_ms=%lld",
+					(long long)(endsAtUnixMs - std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::system_clock::now().time_since_epoch()).count()));
 			}
 
 			try

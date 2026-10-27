@@ -2704,6 +2704,32 @@ void WOLGameSetupMenuUpdate( WindowLayout * layout, void *userData)
 		}
 	}
 
+#if defined(GENERALS_ONLINE)
+	// Tell the relay about the countdown from the game thread.
+	//
+	// NGMPGame::StartCountdown() already calls GencastAnnounceCurrentLobby(), but that call
+	// happens inside the mesh-connectivity callback - whichever thread the WebSocket answered on -
+	// and there the lobby identity does not always resolve. What is left is the periodic announce
+	// that rides the lobby refresh, and the roster does not refresh during the countdown, so a
+	// five second countdown can pass without a single announce. This is the game thread's own copy
+	// of the edge: whenever the flag changes - started or called off - the relay is told.
+	{
+		static Bool s_gencastCountdownWasRunning = FALSE;
+
+		const Bool genCastCountingDown = TheNGMPGame != nullptr && TheNGMPGame->IsCountdownStarted();
+
+		if (genCastCountingDown != s_gencastCountdownWasRunning)
+		{
+			s_gencastCountdownWasRunning = genCastCountingDown;
+
+			GencastDebugLog("gencast: countdown edge running=%d - announcing to the relay",
+				genCastCountingDown ? 1 : 0);
+
+			GencastAnnounceCurrentLobby();
+		}
+	}
+#endif
+
 #if defined(GENERALS_ONLINE_ENABLE_MATCH_START_COUNTDOWN)
 	// is there a countdown in progress?
 	if (TheNGMPGame != nullptr)

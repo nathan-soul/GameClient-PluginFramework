@@ -769,6 +769,15 @@ void GencastAnnounceCurrentLobby()
 
 	if (!ResolveDirectLobbyIdentity(identity))
 	{
+		// Silent normally: this runs on every lobby refresh and "not in a lobby" is the common
+		// answer. Not silent while the host is counting down, because then it is the one announce
+		// that matters, and a countdown nobody hears about reads as a countdown feature that does
+		// not work.
+		if (TheNGMPGame != nullptr && TheNGMPGame->IsCountdownStarted())
+		{
+			GencastDebugLog("gencast: countdown announce skipped - no seated lobby identity on this thread");
+		}
+
 		return;
 	}
 
@@ -1508,8 +1517,24 @@ namespace
 			s_pregameState.live = frame.value("phase", std::string("pregame")) == "live";
 			s_pregameState.lobbyName = frame.value("lobby_name", std::string());
 			s_pregameState.delaySeconds = frame.value("delay_seconds", -1);
-			s_pregameState.countdownStarted = frame.value("countdown_started", false);
-			s_pregameState.countdownEndsAtUnixMs = frame.value("countdown_ends_at_unix_ms", 0LL);
+			{
+				const bool wasCountingDown = s_pregameState.countdownStarted;
+				const long long wasEndsAt = s_pregameState.countdownEndsAtUnixMs;
+
+				s_pregameState.countdownStarted = frame.value("countdown_started", false);
+				s_pregameState.countdownEndsAtUnixMs = frame.value("countdown_ends_at_unix_ms", 0LL);
+
+				// The watcher's half of the chain, one line per change: a countdown that arrives
+				// but is thrown away later is a different bug from one that never arrives, and
+				// the screen alone cannot tell the two apart.
+				if (s_pregameState.countdownStarted != wasCountingDown ||
+					s_pregameState.countdownEndsAtUnixMs != wasEndsAt)
+				{
+					GencastDebugLog("gencast: snapshot countdown started=%d ends_at_ms=%lld",
+						s_pregameState.countdownStarted ? 1 : 0,
+						(long long)s_pregameState.countdownEndsAtUnixMs);
+				}
+			}
 
 			if (!s_pregameState.live)
 			{
@@ -1557,6 +1582,10 @@ namespace
 			// The transition frame says "started" or "cancelled" and carries the host's absolute
 			// end, which is the only way to run the same countdown the host is running.
 			const bool started = frame.value("state", std::string("cancelled")) == "started";
+
+			GencastDebugLog("gencast: countdown frame started=%d ends_at_ms=%lld",
+				started ? 1 : 0, (long long)frame.value("ends_at_unix_ms", 0LL));
+
 			s_pregameState.countdownStarted = started;
 			s_pregameState.countdownEndsAtUnixMs = started
 				? frame.value("ends_at_unix_ms", 0LL) : 0LL;
