@@ -7,78 +7,31 @@
 #include "Common/NameKeyGenerator.h"
 #include "GameClient/GameWindow.h"
 #include "GameClient/GameWindowManager.h"
+#include "GameClient/GUICallbacks.h"	// ToggleControlBar: the same call the observer HUD button makes
 
-#include <vector>
-
-/// The HUD is one window tree: ControlBar.wnd holds the minimap, the command bar, the money and the
-/// power display. W3DInGameUI::draw keeps repainting windows while blacked out - that is how the
-/// quit menu is drawn, and a menu that cannot paint reads as a frozen client - so the way to take
-/// the minimap away with the field is to hide the windows themselves.
+/// The HUD is not drawn by the HUD pass: the minimap, the command bar, the money and the power
+/// display are all windows under ControlBar.wnd:ControlBarParent, and W3DInGameUI::draw keeps
+/// repainting windows while blacked out (that is how the quit menu gets drawn). Hiding that root by
+/// hand was the wrong tool - GameWindowManager::winRepaint walks the flat window list and looks at
+/// each window's own hidden bit, so the children kept drawing.
 ///
-/// Hiding the root alone is not enough: GameWindowManager::winRepaint walks the flat window list and
-/// skips a window on its own hidden bit, so every child has to be hidden too. What was hidden on the
-/// way in is remembered, so a window the game had already hidden (an unused purchase button, say) is
-/// still hidden when the blackout lifts.
-struct GencastHiddenWindow
+/// The game already has the right tool: TOGGLE_CONTROL_BAR. Its handler in CommandXlat.cpp hides
+/// ControlBar.wnd:ControlBarParent, grows the viewport to the full height and drops the special
+/// power shortcut - which is exactly what an observer's "hide the HUD" button does. Use it rather
+/// than a second implementation that has to keep the viewport and the bar in step by itself.
+static Bool s_gencastHidControlBar = FALSE;
+
+static GameWindow *gencastControlBarParent()
 {
-	GameWindow *window;
-	Bool wasHidden;
-};
+	if (TheWindowManager == nullptr || TheNameKeyGenerator == nullptr)
+		return nullptr;
 
-static NameKeyType s_controlBarNameKey = NAMEKEY_INVALID;
-static std::vector<GencastHiddenWindow> s_hiddenByBlackout;
+	static NameKeyType s_key = NAMEKEY_INVALID;
 
-static void gencastHideTree(GameWindow *window, Bool hide)
-{
-	if (window == nullptr)
-		return;
+	if (s_key == NAMEKEY_INVALID)
+		s_key = TheNameKeyGenerator->nameToKey("ControlBar.wnd:ControlBarParent");
 
-	for (GameWindow *child = window->winGetChild(); child != nullptr; child = child->winGetNext())
-	{
-		gencastHideTree(child, hide);
-	}
-
-	if (hide)
-	{
-		GencastHiddenWindow entry;
-		entry.window = window;
-		entry.wasHidden = (window->winGetStatus() & WIN_STATUS_HIDDEN) ? TRUE : FALSE;
-
-		s_hiddenByBlackout.push_back(entry);
-
-		window->winHide(TRUE);
-	}
-	else
-	{
-		window->winHide(FALSE);
-	}
-}
-
-static void gencastHideHud(Bool hide)
-{
-	if (hide)
-	{
-		if (TheWindowManager == nullptr || TheNameKeyGenerator == nullptr)
-			return;
-
-		if (s_controlBarNameKey == NAMEKEY_INVALID)
-			s_controlBarNameKey = TheNameKeyGenerator->nameToKey("ControlBar.wnd");
-
-		s_hiddenByBlackout.clear();
-		gencastHideTree(TheWindowManager->winGetWindowFromId(nullptr, s_controlBarNameKey), TRUE);
-
-		return;
-	}
-
-	for (const GencastHiddenWindow& entry : s_hiddenByBlackout)
-	{
-		if (entry.window == nullptr)
-			continue;
-
-		entry.window->winHide(entry.wasHidden ? TRUE : FALSE);
-	}
-
-	s_hiddenByBlackout.clear();
+	return TheWindowManager->winGetWindowFromId(nullptr, s_key);
 }
 
 Bool TheGenCastBlackout = FALSE;
@@ -90,8 +43,28 @@ void GencastSetBlackout(Bool on)
 
 	TheGenCastBlackout = on;
 
-	// The minimap must go with the field, not stay behind it.
-	gencastHideHud(on);
+	if (on)
+	{
+		// A player who had already hidden the bar themselves keeps it hidden when the blackout
+		// lifts: we only put back what we took away.
+		GameWindow *bar = gencastControlBarParent();
+
+		if (bar != nullptr && !bar->winIsHidden())
+		{
+			s_gencastHidControlBar = TRUE;
+			ToggleControlBar();
+		}
+	}
+	else if (s_gencastHidControlBar)
+	{
+		// The match is over (or the stream stopped): the HUD goes back exactly as it was.
+		GameWindow *bar = gencastControlBarParent();
+
+		if (bar != nullptr && bar->winIsHidden())
+			ToggleControlBar();
+
+		s_gencastHidControlBar = FALSE;
+	}
 
 	if (TheAudio == nullptr)
 		return;
