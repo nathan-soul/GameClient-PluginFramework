@@ -424,15 +424,10 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 				GencastDebugLog("gencast: countdown mirror armed via=announcement ends_in_ms=%d "
 					"(this client is not the lobby host)", duration * 1000);
 			}
-			else if (s_gencastMirrorCountdown.armed)
-			{
-				// Any other announcement while a countdown runs is the host changing the lobby -
-				// the same act that stopped its countdown on its own client.
-				s_gencastMirrorCountdown.clear();
-				announce = true;
-
-				GencastDebugLog("gencast: countdown mirror cancelled via=announcement");
-			}
+			// Nothing here cancels on "some other announcement": a lobby sends those for joins, for
+			// readiness and for the connection check, all of which arrive inside the five seconds and
+			// none of which mean the countdown is off. Cancellation is the lobby going un-ready, which
+			// is the same event that stops the host's own countdown - see GencastMirrorCountdownEndsAt.
 		}
 
 		if (announce)

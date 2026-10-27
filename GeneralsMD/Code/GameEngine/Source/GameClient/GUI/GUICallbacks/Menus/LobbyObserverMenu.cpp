@@ -515,6 +515,22 @@ static void beginCountdownFromRelayEnd(long long endsAtUnixMs)
 	announceCountdownValue();
 }
 
+/// The host called its countdown off. Go back to the lobby view and say so: the stream will not
+/// start, and a watcher left counting would be told it is about to.
+static void cancelCountdownFromRelay(void)
+{
+	GencastDebugLog("gencast: relay countdown cancelled - back to the lobby (phase was %d)", (int)s_phase);
+
+	s_countdownValue = 0;
+	s_countdownNextMs = 0;
+	s_gameStartedAtMs = 0;
+	s_streamLivePending = FALSE;
+	s_phase = LobbyObserverPhase::kIdle;
+
+	observerChat(UnicodeString(L"Countdown cancelled - the host changed the lobby"),
+		GameMakeColor(255, 194, 15, 255));
+}
+
 static void queueObserverJoin(void)
 {
 	if (s_joinQueued || s_lobbyGone || s_observerLobbyId.isEmpty())
@@ -1334,6 +1350,14 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 				// The host is counting down and GO did not push it to this viewer: run the same
 				// countdown here, from the host's own end time.
 				beginCountdownFromRelayEnd(relayState.countdownEndsAtUnixMs);
+			}
+			else if (s_phase == LobbyObserverPhase::kCountdown)
+			{
+				// It was counting and the relay says it is not any more: the host changed the lobby
+				// and called it off. Counting on to zero and then sitting in "waiting for the
+				// stream" (which is what this screen used to do) tells the watcher a match is
+				// starting when nothing is.
+				cancelCountdownFromRelay();
 			}
 		}
 	}
