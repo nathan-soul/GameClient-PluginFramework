@@ -1843,6 +1843,35 @@ void W3DDisplay::step()
 
 //DECLARE_PERF_TIMER(BigAssRenderLoop)
 
+#if defined(GENERALS_ONLINE)
+//-------------------------------------------------------------------------------------------------
+/** Gencast: the one line a blacked-out streamer reads. Drawn from inside the render block, on top
+	* of the black field, so the frame is a normal frame with a different world. */
+//-------------------------------------------------------------------------------------------------
+static void drawGencastBlackoutNotice()
+{
+	static DisplayString *s_notice = nullptr;
+
+	if (s_notice == nullptr && TheDisplayStringManager != nullptr)
+	{
+		s_notice = TheDisplayStringManager->newDisplayString();
+		s_notice->setText(UnicodeString(L"You are defeated - you are still streaming"));
+		s_notice->setFont(TheFontLibrary->getFont("Arial", 14, FALSE));
+	}
+
+	if (s_notice == nullptr)
+		return;
+
+	Int noticeWidth = 0;
+	Int noticeHeight = 0;
+	s_notice->getSize(&noticeWidth, &noticeHeight);
+
+	s_notice->draw((TheDisplay->getWidth() - noticeWidth) / 2,
+		(TheDisplay->getHeight() - noticeHeight) / 2,
+		GameMakeColor(255, 255, 255, 255), GameMakeColor(0, 0, 0, 255));
+}
+#endif
+
 // W3DDisplay::draw ===========================================================
 /** Draw the entire W3D Display */
 //=============================================================================
@@ -1858,38 +1887,6 @@ void W3DDisplay::draw()
 
 	if (TheGlobalData->m_headless)
 		return;
-
-#if defined(GENERALS_ONLINE)
-	if (TheGenCastBlackout)
-	{
-		// Gencast: this player is defeated but still streaming, so the match keeps running and
-		// the relay keeps receiving frames. Nothing of the world is drawn - a defeated player
-		// must not keep an eye into the match for the team - and the notice is painted here
-		// rather than by the HUD pass, which is skipped for exactly the same reason.
-		TheDisplay->drawFillRect(0, 0, getWidth(), getHeight(), GameMakeColor(0, 0, 0, 255));
-
-		static DisplayString *s_notice = nullptr;
-
-		if (s_notice == nullptr && TheDisplayStringManager != nullptr)
-		{
-			s_notice = TheDisplayStringManager->newDisplayString();
-			s_notice->setText(UnicodeString(L"You are defeated - you are still streaming"));
-			s_notice->setFont(TheFontLibrary->getFont("Arial", 14, FALSE));
-		}
-
-		if (s_notice != nullptr)
-		{
-			Int noticeWidth = 0;
-			Int noticeHeight = 0;
-			s_notice->getSize(&noticeWidth, &noticeHeight);
-
-			s_notice->draw((getWidth() - noticeWidth) / 2, (getHeight() - noticeHeight) / 2,
-				GameMakeColor(255, 255, 255, 255), GameMakeColor(0, 0, 0, 255));
-		}
-
-		return;
-	}
-#endif
 
 	updateStartupSplash();
 
@@ -2083,10 +2080,26 @@ AGAIN:
 				if (numRenderTargetPolygons || numRenderTargetVertices)
 					Debug_Statistics::Record_DX8_Polys_And_Vertices(numRenderTargetPolygons,numRenderTargetVertices,ShaderClass::_PresetOpaqueShader);
 
-				// draw all views of the world
-				drawViews();
+#if defined(GENERALS_ONLINE)
+				if (TheGenCastBlackout)
+				{
+					// Gencast: this player is defeated but still streaming, so the match keeps running
+					// and the relay keeps receiving frames. The world is not drawn - a defeated player
+					// must not keep an eye into the match for the team - but the frame itself still
+					// goes through: the field and the notice are painted here, inside the render
+					// block, so WW3D::End_Render still presents, the cursor still moves and menus
+					// still repaint. Skipping the whole block made a live match look like a dead client.
+					TheDisplay->drawFillRect(0, 0, getWidth(), getHeight(), GameMakeColor(0, 0, 0, 255));
+					drawGencastBlackoutNotice();
+				}
+				else
+#endif
+				{
+					// draw all views of the world
+					drawViews();
+				}
 
-				// draw the user interface
+				// draw the user interface (blacked out: only its windows - see W3DInGameUI::draw)
 				TheInGameUI->DRAW();
 
 				TheGameClient->DRAW();

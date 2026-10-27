@@ -394,11 +394,17 @@ void W3DInGameUI::reset()
 void W3DInGameUI::draw()
 {
 #if defined(GENERALS_ONLINE)
-	// A blacked-out streamer gets the notice and nothing else: the HUD, the minimap and the
-	// control bar all describe a match this player may no longer watch. W3DDisplay::draw has
-	// already painted the black field and the one line of text.
+	// A blacked-out streamer gets the field and the notice, and none of the HUD: the minimap, the
+	// control bar and the hints all describe a match this player may no longer watch. What must
+	// NOT be skipped is winRepaint() below - that is where every in-game window is drawn, the quit
+	// menu included. Returning from here made a menu open onto nothing, which reads as a freeze.
 	if (TheGenCastBlackout)
+	{
+		TheDisplay->beginBatch();
+		TheWindowManager->winRepaint();
+		TheDisplay->endBatch();
 		return;
+	}
 #endif
 
 	TheDisplay->beginBatch();
