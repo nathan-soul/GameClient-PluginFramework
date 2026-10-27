@@ -12,7 +12,7 @@
 /// power display. Hiding that root is what removes the minimap - W3DInGameUI::draw keeps repainting
 /// windows while blacked out, because that is also how the quit menu is drawn, and a defeated
 /// streamer must not be able to read a minimap that the field is supposed to hide.
-static NameKeyType s_controlBarNameKey = 0;
+static NameKeyType s_controlBarNameKey = NAMEKEY_INVALID;
 static Bool s_controlBarFound = FALSE;
 static Bool s_controlBarWasHidden = FALSE;
 
