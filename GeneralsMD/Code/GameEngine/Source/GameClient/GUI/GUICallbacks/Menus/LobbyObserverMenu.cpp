@@ -30,6 +30,7 @@
 
 #include "GameClient/LobbyObserverMenu.h"
 
+#include "Common/GencastClientLog.h"	// GencastDebugLog: one line per countdown decision
 #include "Common/GameEngine.h"
 #include "Common/GencastTransport.h"	// GencastPollLobbyStreamState: the direct-mode liveness probe
 #include <chrono>			// beginCountdownFromRelayEnd: wall clock vs. the host's absolute end
