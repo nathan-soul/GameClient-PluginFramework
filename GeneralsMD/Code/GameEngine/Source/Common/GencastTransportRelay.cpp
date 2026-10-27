@@ -371,7 +371,7 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 
 	/// Arms the mirror, or cancels it, from a lobby announcement. Called on every announcement a
 	/// member receives, which is why it says what it decided.
-	void GencastNoteLobbyAnnouncement(const std::string& message, bool isAnnouncement)
+	void GencastNoteLobbyAnnouncementInternal(const std::string& message, bool isAnnouncement)
 	{
 		if (!isAnnouncement || message.empty())
 		{
@@ -444,7 +444,7 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 	/// The same mirror, armed from GO's own START_GAME_COUNTDOWN_STARTED. It is sent by the host and
 	/// may or may not be fanned out to lobby members; when it is, it is the cleaner of the two
 	/// signals and the log says which one fired.
-	void GencastNoteHostCountdownStarted()
+	void GencastNoteHostCountdownStartedInternal()
 	{
 		NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
 			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
@@ -1611,6 +1611,19 @@ class RelayGencastTransport : public GencastTransport
 		std::string m_lobbyName;
 		int m_delaySeconds = -1;
 	};
+}
+
+// The two entry points other translation units call. Their work lives inside the unnamed namespace
+// above, beside the mirror state they touch; these are the external names GencastTransport.h
+// declares, which the chat handler and the websocket case call.
+void GencastNoteLobbyAnnouncement(const std::string& message, bool isAnnouncement)
+{
+	GencastNoteLobbyAnnouncementInternal(message, isAnnouncement);
+}
+
+void GencastNoteHostCountdownStarted()
+{
+	GencastNoteHostCountdownStartedInternal();
 }
 
 GencastTransport* CreateRelayGencastTransport()
