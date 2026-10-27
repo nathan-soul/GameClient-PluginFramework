@@ -451,6 +451,17 @@ static void populateColorComboReadOnly(GameWindow* combo, Int color)
 // Phase transitions
 // ============================================================================
 
+/// One line per second in the chat box, which is the only place this screen has to count down in:
+/// s_countdownValue was decremented every second and never drawn, so "the countdown ran" and "the
+/// countdown was invisible" looked exactly the same to the person watching.
+static void announceCountdownValue(void)
+{
+	UnicodeString line;
+
+	line.format(L"Match starting in %d...", s_countdownValue);
+	observerChat(line, GameMakeColor(255, 194, 15, 255));
+}
+
 static void beginCountdown(void)
 {
 	if (s_phase != LobbyObserverPhase::kIdle || s_lobbyGone)
@@ -460,6 +471,8 @@ static void beginCountdown(void)
 	s_countdownNextMs = timeGetTime() + 1000;
 	s_gameStartedAtMs = timeGetTime();
 	s_phase = LobbyObserverPhase::kCountdown;
+
+	announceCountdownValue();
 }
 
 /// Start the same countdown the lobby's own members see, seeded from the host's absolute end time
@@ -467,8 +480,15 @@ static void beginCountdown(void)
 /// push (GAME_STARTING) needs the /observers report, which a plain relay install does not send.
 static void beginCountdownFromRelayEnd(long long endsAtUnixMs)
 {
-	if (s_phase != LobbyObserverPhase::kIdle || s_lobbyGone)
+	// kWaiting is allowed as well as kIdle: a watcher who has already seen one countdown run out
+	// sits in "waiting for the stream", and a host who starts a second one must not be ignored -
+	// silently, which is how this looked like a relay that never sent anything.
+	if (s_lobbyGone || (s_phase != LobbyObserverPhase::kIdle && s_phase != LobbyObserverPhase::kWaiting))
+	{
+		GencastDebugLog("gencast: relay countdown skipped in phase=%d", (int)s_phase);
+
 		return;
+	}
 
 	const long long nowMs = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::system_clock::now().time_since_epoch()).count();
@@ -495,7 +515,10 @@ static void beginCountdownFromRelayEnd(long long endsAtUnixMs)
 	s_countdownValue = seconds;
 	s_countdownNextMs = timeGetTime() + 1000;
 	s_gameStartedAtMs = timeGetTime();
+	s_streamLivePending = FALSE;
 	s_phase = LobbyObserverPhase::kCountdown;
+
+	announceCountdownValue();
 }
 
 static void queueObserverJoin(void)
@@ -1327,6 +1350,7 @@ void LobbyObserverUpdate(WindowLayout* layout, void* userData)
 		--s_countdownValue;
 		if (s_countdownValue > 0)
 		{
+			announceCountdownValue();
 			s_countdownNextMs = now + 1000;
 		}
 		else
