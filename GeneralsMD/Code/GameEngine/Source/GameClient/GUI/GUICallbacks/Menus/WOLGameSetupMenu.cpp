@@ -60,7 +60,8 @@
 #include "GameNetwork/GameSpy/LobbyUtils.h"
 
 #if defined(GENERALS_ONLINE)
-#include "Common/GencastTransport.h"		// the relay decides who may stream; /stream reads that
+#include "Common/GencastTransport.h"
+#include "Common/GencastClientLog.h"	// GencastDebugLog: the countdown edge reaches the relay		// the relay decides who may stream; /stream reads that
 #include "Common/LiveObserver.h"
 #include "GameClient/LobbyObserverMenu.h"
 #include "GameClient/LiveGamesMenu.h"
