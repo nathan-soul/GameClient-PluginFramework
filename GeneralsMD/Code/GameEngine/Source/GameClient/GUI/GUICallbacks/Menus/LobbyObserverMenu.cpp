@@ -30,7 +30,8 @@
 
 #include "GameClient/LobbyObserverMenu.h"
 
-#include "Common/GencastClientLog.h"	// GencastDebugLog: one line per countdown decision
+#include "Common/GencastClientLog.h"
+#include "GameClient/GencastCountdownPlan.h"	// the countdown rule, tested outside the engine	// GencastDebugLog: one line per countdown decision
 #include "Common/GameEngine.h"
 #include "Common/GencastTransport.h"	// GencastPollLobbyStreamState: the direct-mode liveness probe
 #include <chrono>			// beginCountdownFromRelayEnd: wall clock vs. the host's absolute end
@@ -460,6 +461,8 @@ static void announceCountdownValue(void)
 
 	line.format(L"Match starting in %d...", s_countdownValue);
 	observerChat(line, GameMakeColor(255, 194, 15, 255));
+
+	GencastDebugLog("gencast: countdown line %d printed", s_countdownValue);
 }
 
 static void beginCountdown(void)
@@ -480,39 +483,30 @@ static void beginCountdown(void)
 /// push (GAME_STARTING) needs the /observers report, which a plain relay install does not send.
 static void beginCountdownFromRelayEnd(long long endsAtUnixMs)
 {
-	// kWaiting is allowed as well as kIdle: a watcher who has already seen one countdown run out
-	// sits in "waiting for the stream", and a host who starts a second one must not be ignored -
-	// silently, which is how this looked like a relay that never sent anything.
-	if (s_lobbyGone || (s_phase != LobbyObserverPhase::kIdle && s_phase != LobbyObserverPhase::kWaiting))
-	{
-		GencastDebugLog("gencast: relay countdown skipped in phase=%d", (int)s_phase);
-
-		return;
-	}
-
 	const long long nowMs = (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::system_clock::now().time_since_epoch()).count();
-	const long long remainingMs = endsAtUnixMs - nowMs;
 
-	// Already over, or so far away that it is not this view's countdown to run: the hand-off
-	// follows from the stream going live instead. Not silent - a countdown that never appears is
-	// indistinguishable from one that never arrived, and this line is the difference.
-	if (remainingMs <= 0 || remainingMs > 15000)
+	// The rule itself lives in GencastCountdownPlan.h so tools/countdown_plan_test.sh can exercise
+	// it: which phases may start a countdown (idle, and waiting - a host who starts a second match
+	// while this view still says "waiting for the stream" is a real case), the 0..15000 ms window
+	// that rejects a stale utc_clock stamp, and the ceiling to whole seconds.
+	const GencastCountdownPlan plan = GencastPlanCountdown(endsAtUnixMs, nowMs,
+		s_lobbyGone ? true : false,
+		s_phase == LobbyObserverPhase::kIdle,
+		s_phase == LobbyObserverPhase::kWaiting);
+
+	if (!plan.accepted)
 	{
-		GencastDebugLog("gencast: relay countdown ignored ends_in_ms=%lld (window is 0..15000)",
-			(long long)remainingMs);
+		GencastDebugLog("gencast: relay countdown refused reason=%s phase=%d ends_in_ms=%lld",
+			plan.reason, (int)s_phase, (long long)(endsAtUnixMs - nowMs));
 
 		return;
 	}
 
-	GencastDebugLog("gencast: relay countdown starting in %lld ms", (long long)remainingMs);
+	GencastDebugLog("gencast: relay countdown starting at %d (ends_in_ms=%lld)",
+		plan.seconds, (long long)(endsAtUnixMs - nowMs));
 
-	Int seconds = (Int)((remainingMs + 999) / 1000);
-
-	if (seconds < 1)
-		seconds = 1;
-
-	s_countdownValue = seconds;
+	s_countdownValue = plan.seconds;
 	s_countdownNextMs = timeGetTime() + 1000;
 	s_gameStartedAtMs = timeGetTime();
 	s_streamLivePending = FALSE;
