@@ -1444,6 +1444,11 @@ void WebSocket::Tick()
 											// line drawn below.
 											GencastForwardLobbyChat(chatData.user_id, chatData.message, chatData.announcement);
 
+											// A member's only notice that the host started the countdown is this
+											// line, so the relay's countdown is mirrored from it when this client
+											// is not the host.
+											GencastNoteLobbyAnnouncement(chatData.message, chatData.announcement);
+
 											UnicodeString unicodeStr(from_utf8(chatData.message).c_str());
 
 											NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
@@ -1551,6 +1556,15 @@ void WebSocket::Tick()
 										{
 											pLobbyInterface->UpdateRoomDataCache(nullptr);
 										}
+									}
+									break;
+
+									case EWebSocketMessageID::START_GAME_COUNTDOWN_STARTED:
+									{
+										// The lobby host told Services it started the countdown. Whether this is
+										// fanned out to members is the service's business; if it arrives, a member
+										// needs no text matching to know the match is about to begin.
+										GencastNoteHostCountdownStarted();
 									}
 									break;
 

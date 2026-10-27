@@ -4,6 +4,9 @@
 
 #include "Common/GencastTransport.h"
 #include "Common/GencastClientLog.h"
+#include "GameText.h"
+#include "GameClient/GencastCountdownMirror.h"
+#include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
 
 #include "GameNetwork/GeneralsOnline/GeneralsOnline_Settings.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
@@ -1285,6 +1288,184 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		/// RegisterStream when a stream is starting, AnnounceLobby whenever the lobby changes.
 		/// Empty means the details could not be encoded (invalid UTF-8 in a name, which dump()
 		/// throws on), and the caller reports or logs it.
+	// A streamer is not necessarily the lobby host. When it is not, its client has no countdown of
+	// its own to publish: NGMPGame::StartCountdown() runs on the host's machine, and a host that is
+	// a plain GO client has no GenCast code to tell the relay about it. What a member does see is the
+	// host's start line, and readiness collapsing when the host calls it off - that is what
+	// GencastCountdownMirror turns into an end this client can announce. The rule and the cases it
+	// has to survive live in GameClient/GencastCountdownMirror.h and tools/countdown_mirror_test.sh.
+	static std::mutex s_gencastMirrorCountdownMutex;
+	static GencastMirrorCountdown s_gencastMirrorCountdown;
+
+	static int64_t GencastWallClockMs()
+	{
+		return std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::system_clock::now().time_since_epoch()).count();
+	}
+
+	/// The lobby's readiness folded into one number. A member going un-ready is the same event that
+	/// stops the host's countdown, so the mirror watches this rather than the countdown it cannot see.
+	static bool GencastCurrentLobbyReadySignature(unsigned& outSignature)
+	{
+		NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+		if (pLobbyInterface == nullptr || pLobbyInterface->GetCurrentGame() == nullptr)
+		{
+			return false;
+		}
+
+		unsigned signature = 0;
+
+		for (const LobbyMemberEntry& member : pLobbyInterface->GetCurrentLobby().members)
+		{
+			signature = GencastReadySignatureStep(signature, member.m_SlotIndex, member.m_bIsReady);
+		}
+
+		outSignature = signature;
+
+		return true;
+	}
+
+	static void GencastClearMirrorCountdown()
+	{
+		std::lock_guard<std::mutex> lock(s_gencastMirrorCountdownMutex);
+
+		s_gencastMirrorCountdown.clear();
+	}
+
+	/// The mirrored end, when this client has one that still applies. Drops it when readiness moved,
+	/// because that is the same lobby change that stopped the host's countdown.
+	static bool GencastMirrorCountdownEndsAt(int64_t& outEndsAtUnixMs)
+	{
+		std::lock_guard<std::mutex> lock(s_gencastMirrorCountdownMutex);
+
+		unsigned signature = 0;
+
+		if (GencastCurrentLobbyReadySignature(signature) &&
+			s_gencastMirrorCountdown.cancelIfReadyChanged(signature))
+		{
+			GencastDebugLog("gencast: countdown mirror cancelled (the lobby went un-ready)");
+		}
+
+		if (s_gencastMirrorCountdown.armed && !s_gencastMirrorCountdown.active(GencastWallClockMs()))
+		{
+			s_gencastMirrorCountdown.clear();
+
+			GencastDebugLog("gencast: countdown mirror expired");
+		}
+
+		if (!s_gencastMirrorCountdown.active(GencastWallClockMs()))
+		{
+			return false;
+		}
+
+		outEndsAtUnixMs = s_gencastMirrorCountdown.endsAtUnixMs;
+
+		return true;
+	}
+
+	/// Arms the mirror, or cancels it, from a lobby announcement. Called on every announcement a
+	/// member receives, which is why it says what it decided.
+	void GencastNoteLobbyAnnouncement(const std::string& message, bool isAnnouncement)
+	{
+		if (!isAnnouncement || message.empty())
+		{
+			return;
+		}
+
+		NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+		NGMPGame* pGame = pLobbyInterface != nullptr ? pLobbyInterface->GetCurrentGame() : nullptr;
+
+		// The host runs the real countdown and publishes it from its own state; a mirror there would
+		// be a second opinion about the same thing.
+		if (pGame == nullptr || pGame->amIHost())
+		{
+			return;
+		}
+
+		int duration = pGame->GetTotalCountdownDuration();
+
+		if (duration <= 0)
+		{
+			duration = GencastMirrorCountdown::kDefaultDurationSeconds;
+		}
+
+		// The host builds its line from these two strings, so the same build recognises it whatever
+		// the language is set to - both sides read the same game text.
+		UnicodeString plural;
+		plural.format(TheGameText->fetch("LAN:GameStartTimerPlural"), duration);
+
+		UnicodeString singular;
+		singular.format(TheGameText->fetch("LAN:GameStartTimerSingular"), 1);
+
+		const UnicodeString incoming(from_utf8(message).c_str());
+
+		const bool startLine = (incoming.compare(plural) == 0 || incoming.compare(singular) == 0);
+
+		unsigned signature = 0;
+		GencastCurrentLobbyReadySignature(signature);
+
+		bool announce = false;
+
+		{
+			std::lock_guard<std::mutex> lock(s_gencastMirrorCountdownMutex);
+
+			if (startLine)
+			{
+				s_gencastMirrorCountdown.arm(GencastWallClockMs(), duration, signature);
+				announce = true;
+
+				GencastDebugLog("gencast: countdown mirror armed via=announcement ends_in_ms=%d "
+					"(this client is not the lobby host)", duration * 1000);
+			}
+			else if (s_gencastMirrorCountdown.armed)
+			{
+				// Any other announcement while a countdown runs is the host changing the lobby -
+				// the same act that stopped its countdown on its own client.
+				s_gencastMirrorCountdown.clear();
+				announce = true;
+
+				GencastDebugLog("gencast: countdown mirror cancelled via=announcement");
+			}
+		}
+
+		if (announce)
+		{
+			GencastAnnounceCurrentLobby();
+		}
+	}
+
+	/// The same mirror, armed from GO's own START_GAME_COUNTDOWN_STARTED. It is sent by the host and
+	/// may or may not be fanned out to lobby members; when it is, it is the cleaner of the two
+	/// signals and the log says which one fired.
+	void GencastNoteHostCountdownStarted()
+	{
+		NGMP_OnlineServices_LobbyInterface* pLobbyInterface =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+		NGMPGame* pGame = pLobbyInterface != nullptr ? pLobbyInterface->GetCurrentGame() : nullptr;
+
+		if (pGame == nullptr || pGame->amIHost())
+		{
+			return;
+		}
+
+		unsigned signature = 0;
+		GencastCurrentLobbyReadySignature(signature);
+
+		{
+			std::lock_guard<std::mutex> lock(s_gencastMirrorCountdownMutex);
+
+			s_gencastMirrorCountdown.arm(GencastWallClockMs(), pGame->GetTotalCountdownDuration(), signature);
+		}
+
+		GencastDebugLog("gencast: countdown mirror armed via=ws");
+
+		GencastAnnounceCurrentLobby();
+	}
+
+
 		std::string BuildAnnounceBody(const std::string& lobbyId, EGencastStreamState state)
 		{
 			nlohmann::json request;
@@ -1338,19 +1519,44 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 			// lobby (pregame) and from the streamer at match start (live).
 			request["state"] = GencastStreamStateName(state);
 
-			// The host's countdown, read from the client state that runs it rather than mirrored
-			// into a second flag: NGMPGame::StartCountdown is the one place it begins (and the
-			// place that tells Services; SendData_CountdownStarted also nudges this announce),
-			// while every cancel path - a field change, a departure, the countdown running out,
-			// START_GAME - stops it there, so the next announce carries the cleared flag with
-			// nothing left to keep in step. A live announce never carries one: the relay only
-			// shows it on a lobby that is still seating.
+			// The countdown, from whichever client is in a position to know it.
+			//
+			// The lobby host runs the real thing: NGMPGame::StartCountdown is the one place it
+			// begins (and the place that tells Services; SendData_CountdownStarted also nudges
+			// this announce), while every cancel path - a field change, a departure, the countdown
+			// running out, START_GAME - stops it there. A live announce never carries one: the
+			// relay only shows it on a lobby that is still seating.
+			//
+			// A streamer is not necessarily the lobby host, though, and then its own NGMPGame never
+			// starts a countdown: START_GAME_COUNTDOWN_STARTED goes to Services with no handler on
+			// the receiving side, and the lobby object carries no timer. All that client sees is
+			// the host's announcement right before the start, which arms the mirror below.
+			int64_t mirroredEndsAtUnixMs = 0;
+
+			const bool mirroredCountdown = state == EGencastStreamState::Pregame &&
+				GencastMirrorCountdownEndsAt(mirroredEndsAtUnixMs);
+
 			const bool countdownStarted = state == EGencastStreamState::Pregame &&
-				TheNGMPGame != nullptr && TheNGMPGame->IsCountdownStarted();
+				((TheNGMPGame != nullptr && TheNGMPGame->IsCountdownStarted()) || mirroredCountdown);
 
 			request["countdown_started"] = countdownStarted;
 
-			if (countdownStarted)
+			if (countdownStarted && !(TheNGMPGame != nullptr && TheNGMPGame->IsCountdownStarted()))
+			{
+				// The mirrored one is already an absolute wall-clock end: it was computed from this
+				// client's own system_clock when the host's line arrived, so it needs no skew fix.
+				request["countdown_ends_at_unix_ms"] = mirroredEndsAtUnixMs;
+
+				GencastDebugLog("gencast: announce countdown (mirrored) ends_in_ms=%lld",
+					(long long)(mirroredEndsAtUnixMs - std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::system_clock::now().time_since_epoch()).count()));
+			}
+			else if (state != EGencastStreamState::Pregame)
+			{
+				GencastClearMirrorCountdown();
+			}
+
+			if (countdownStarted && TheNGMPGame != nullptr && TheNGMPGame->IsCountdownStarted())
 			{
 
 				// The length the host's own on-screen timer counts down, not a guess: the same
