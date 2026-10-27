@@ -1625,6 +1625,18 @@ namespace
 				GencastDebugLog("gencast: pregame socket connect failed url=%s code=%d", url.c_str(),
 					(int)connected);
 
+				// 22 is CURLE_HTTP_RETURNED_ERROR: the upgrade was refused with a status, which for
+				// this route means the session behind the id is gone (the view stopped, or the relay
+				// replaced it). Retrying cannot fix that - it only put a 4xx in the relay's log every
+				// two seconds for the rest of the session - so the lane ends here and the poll carries
+				// the view until the next join hands out a fresh session.
+				if (connected == CURLE_HTTP_RETURNED_ERROR)
+				{
+					GencastDebugLog("gencast: pregame socket abandoned - the session is gone");
+					s_pregameRun.store(false);
+					break;
+				}
+
 				for (int i = 0; i < 200 && s_pregameRun.load(); ++i)
 				{
 					Sleep(10);

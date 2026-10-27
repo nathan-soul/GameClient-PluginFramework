@@ -4269,6 +4269,7 @@ void GameLogic::update()
 
 #if defined(GENERALS_ONLINE)
 	static Bool s_gencastNoticeShown = FALSE;
+	static Bool s_gencastMatchEnded = FALSE;	// the match-over teardown ran once
 
 	const Bool isStreaming = (TheLiveStreamer != nullptr) && TheLiveStreamer->isStreaming();
 
@@ -4284,8 +4285,14 @@ void GameLogic::update()
 	// predicate asks, for a host, whether an alive ally is left, so a solo host never satisfied
 	// it. That is the player most likely to be streaming, and the one the blackout exists for:
 	// a defeated player must not keep an eye into the match to feed his team.
+	// A match that has been decided is not "still running": VictoryConditions stamps the frame on
+	// which the last alliance was left alive. From that moment the blackout has nothing left to
+	// protect - the match is over for everyone - and holding it would leave a defeated streamer
+	// staring at a black screen behind the end-of-match menu.
+	const Bool matchOver = TheVictoryConditions != nullptr && TheVictoryConditions->getEndFrame() != 0;
+
 	const Bool gencastBlackout = getGameMode() == GAME_INTERNET && observersDisabled &&
-		isDefeated && isStreaming;
+		isDefeated && isStreaming && !matchOver;
 
 	GencastSetBlackout(gencastBlackout);
 
@@ -4316,6 +4323,27 @@ void GameLogic::update()
 	else if (!isDefeated)
 	{
 		s_gencastNoticeShown = FALSE;
+	}
+
+	// The match is over and this client was the streamer. Nothing else will end it for them: the
+	// vanilla defeat path is the observers-disabled *kick*, which a streamer must not get (it would
+	// cut every watcher's feed mid-match), so without this he simply sat in the game forever with a
+	// finished match around him. Close the stream first - the relay arms the post-game hold - and
+	// then let the game end the way a defeat normally ends: the quit menu.
+	if (isStreaming && isDefeated && matchOver && !s_gencastMatchEnded)
+	{
+		s_gencastMatchEnded = TRUE;
+
+		GencastDebugLog("gencast: match over - closing the stream and ending the game (end_frame=%u)",
+			TheVictoryConditions->getEndFrame());
+
+		GencastEndCurrentMatch("match-over");
+		TheGameLogic->quit(FALSE);
+	}
+	else if (!matchOver)
+	{
+		// A new match has not been decided yet: this client may stream and lose again.
+		s_gencastMatchEnded = FALSE;
 	}
 
 	// The vanilla kick keeps its own rule and never applies to a streamer: dropping them ends
