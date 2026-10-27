@@ -124,6 +124,7 @@ struct QuitGameException {};
 #if defined(GENERALS_ONLINE)
 #include "Common/GencastBlackout.h"
 #include "Common/GencastClientLog.h"
+#include "Common/GencastTransport.h"	// GencastEndCurrentMatch: the match-over word to the relay
 #include "Common/LiveStreamer.h"
 #endif
 
