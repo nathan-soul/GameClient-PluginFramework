@@ -1036,6 +1036,8 @@ static void WOLLockSettings()
 
 static void StartPressed()
 {
+	GencastDebugLog("gencast: start pressed");
+
 	Bool isReady = TRUE;
 	Bool allHaveMap = TRUE;
 	Int playerCount = 0;
@@ -1147,6 +1149,9 @@ static void StartPressed()
 	}
 
 	// Check for observer + AI players
+	GencastDebugLog("gencast: start check ready=%d players=%d humans=%d",
+		isReady ? 1 : 0, playerCount, humanCount);
+
 	if (TheGlobalData->m_netMinPlayers && !humanCount)
 	{
 		if (myGame->amIHost())
@@ -1256,6 +1261,8 @@ static void StartPressed()
 								strInform.format(TheGameText->fetch("LAN:GameStartTimerPlural"), TheNGMPGame->GetTotalCountdownDuration());
 								pLobbyInterface->SendAnnouncementMessageToCurrentLobby(strInform, true);
 
+								GencastDebugLog("gencast: start countdown now (all connected, host)");
+
 								TheNGMPGame->StartCountdown();
 								buttonSelectMap->winEnable(FALSE);		
 							}
@@ -1266,6 +1273,8 @@ static void StartPressed()
 					}
 					else
 					{
+						GencastDebugLog("gencast: start refused, player network not ready");
+
 						UnicodeString strInform = UnicodeString(L"Connections: The player network is not ready. Try again shortly.");
 						GadgetListBoxAddEntryText(listboxGameSetupChat, strInform, GameMakeColor(255, 194, 15, 255), -1, -1);
 
@@ -2572,6 +2581,24 @@ void WOLGameSetupMenuUpdate( WindowLayout * layout, void *userData)
 	// answer has gone stale - which is also what republishes a lobby whose announce was held
 	// while the answer was still unknown.
 	GencastTickStreamPermission();
+
+	// A heartbeat, once every five seconds. The countdown edge below can only fire when the flag
+	// changes, so silence there is ambiguous: it reads the same whether the lobby tick runs and the
+	// host never started a match, or the tick never runs at all. This line separates the two.
+	{
+		static UnsignedInt s_gencastLastTickLog = 0;
+
+		const UnsignedInt nowTick = timeGetTime();
+
+		if (s_gencastLastTickLog == 0 || nowTick - s_gencastLastTickLog >= 5000)
+		{
+			s_gencastLastTickLog = nowTick;
+
+			GencastDebugLog("gencast: lobby tick countdown=%d game=%d",
+				TheNGMPGame != nullptr && TheNGMPGame->IsCountdownStarted() ? 1 : 0,
+				TheNGMPGame != nullptr && TheNGMPGame->isGameInProgress() ? 1 : 0);
+		}
+	}
 #endif
 
 	// Refresh only the fast-changing connection indicators each frame.

@@ -1,4 +1,5 @@
 #include "GameNetwork/GeneralsOnline/NGMPGame.h"
+#include "Common/GencastClientLog.h"
 #if defined(GENERALS_ONLINE)
 #include "Common/GencastTransport.h"
 #endif
@@ -603,6 +604,8 @@ void NGMPGame::reset(void)
 
 void NGMPGame::StartCountdown()
 {
+	GencastDebugLog("gencast: NGMPGame::StartCountdown duration=%d", GetTotalCountdownDuration());
+
 	m_bCountdownStarted = true;
 	m_countdownStartTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
 	m_countdownLastCheckTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::utc_clock::now().time_since_epoch()).count();
