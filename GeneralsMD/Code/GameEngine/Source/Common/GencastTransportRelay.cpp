@@ -4,7 +4,7 @@
 
 #include "Common/GencastTransport.h"
 #include "Common/GencastClientLog.h"
-#include "GameText.h"
+#include "GameClient/GameText.h"
 #include "GameClient/GencastCountdownMirror.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
 
