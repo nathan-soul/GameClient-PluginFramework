@@ -16,6 +16,11 @@
 
 extern Bool TheGenCastBlackout;
 
-/// Sets the flag and, on a change, mutes or unmutes game audio for the streaming player.
-/// Cheap to call every frame: it returns immediately unless the state actually changed.
+/// Sets the flag and, on a change, mutes or unmutes game audio for the streaming player and takes
+/// the HUD away (or puts it back). Cheap to call every frame: it returns immediately unless the
+/// state actually changed.
 void GencastSetBlackout(Bool on);
+
+/// Puts the HUD away again if something showed it while the blackout was on - the HUD toggle key
+/// included. Call once per frame while blacked out; it does nothing when the bar is already hidden.
+void GencastEnforceBlackoutHud();

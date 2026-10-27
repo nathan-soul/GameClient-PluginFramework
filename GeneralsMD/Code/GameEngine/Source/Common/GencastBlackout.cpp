@@ -36,6 +36,24 @@ static GameWindow *gencastControlBarParent()
 
 Bool TheGenCastBlackout = FALSE;
 
+/// Called every frame while the blackout is on. The toggle above is a *state*, and anything can flip
+/// it back - the player pressing the HUD key, a control bar stage change, a replay control update.
+/// A defeated streamer must not get the minimap back by pressing a key, so while the blackout holds
+/// the bar is put away again on the next tick rather than trusted to stay hidden.
+void GencastEnforceBlackoutHud()
+{
+	if (!TheGenCastBlackout)
+		return;
+
+	GameWindow *bar = gencastControlBarParent();
+
+	if (bar != nullptr && !bar->winIsHidden())
+	{
+		ToggleControlBar();
+		s_gencastHidControlBar = TRUE;
+	}
+}
+
 void GencastSetBlackout(Bool on)
 {
 	if (TheGenCastBlackout == on)

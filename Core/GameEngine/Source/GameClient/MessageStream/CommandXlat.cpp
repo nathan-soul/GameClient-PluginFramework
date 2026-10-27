@@ -3478,6 +3478,21 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 		//-----------------------------------------------------------------------------------------
 		case GameMessage::MSG_META_TOGGLE_CONTROL_BAR:
 		{
+#if defined(GENERALS_ONLINE)
+			// Blacked out: the HUD toggle is not a decision this player gets to make. The minimap is
+			// the reason the blackout exists, so the key does nothing while it holds. The state is
+			// enforced again on the next tick in case something else flips it.
+			// Declared rather than included: this file is Core, and Core's include path does not
+			// reach GeneralsMD's headers. The symbol lives in GencastBlackout.cpp.
+			extern Bool TheGenCastBlackout;
+
+			if (TheGenCastBlackout)
+			{
+				disp = DESTROY_MESSAGE;
+				break;
+			}
+#endif
+
 			if(TheShell->isShellActive())
 			{
 				WindowLayout *win = TheShell->top();

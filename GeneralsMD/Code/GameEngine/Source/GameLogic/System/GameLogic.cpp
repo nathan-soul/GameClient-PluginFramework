@@ -4297,6 +4297,10 @@ void GameLogic::update()
 
 	GencastSetBlackout(gencastBlackout);
 
+	// The HUD toggle is a state, and a key press can flip it while the blackout holds. Enforce,
+	// do not assume: one hash lookup per frame, and only when the bar is visible again.
+	GencastEnforceBlackoutHud();
+
 	// One line per change, naming every input. The last report said only "still frozen"; the
 	// client could not say which half of the predicate was false, so the next one will.
 	{
