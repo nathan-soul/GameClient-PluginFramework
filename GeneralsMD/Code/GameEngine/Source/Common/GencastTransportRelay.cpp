@@ -6,6 +6,7 @@
 #include "Common/GencastClientLog.h"
 #include "GameClient/GameText.h"
 #include "GameClient/GencastCountdownMirror.h"
+#include "GameClient/GencastAnnounceIdentity.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
 
 #include "GameNetwork/GeneralsOnline/GeneralsOnline_Settings.h"
@@ -462,6 +463,40 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		GencastDebugLog("gencast: countdown mirror armed via=ws");
 
 		GencastAnnounceCurrentLobby();
+	}
+
+	// The identity the relay keys this client's entry on. GO mints a lobby's match id when the
+	// match is created - i.e. when the countdown ends - so the same game would be announced under
+	// the lobby id for the whole pregame and under the match id from the first frame on. The relay
+	// keys those two differently (WatchRegistry.KeyFor), which is two games in the list: the
+	// pregame entry that never goes live with watchers attached to it, and a live duplicate. The
+	// pin lives in GencastAnnounceIdentity.h (and tools/run_announce_identity_test.sh), and every
+	// announce, end and unannounce for a lobby quotes the pinned pair.
+	static std::mutex s_gencastAnnounceIdentityMutex;
+	static GencastAnnounceIdentity s_gencastAnnounceIdentity;
+
+	static uint64_t GencastPinnedMatchId(const std::string& lobbyId, uint64_t currentMatchId)
+	{
+		std::lock_guard<std::mutex> lock(s_gencastAnnounceIdentityMutex);
+
+		bool pinnedNow = false;
+		const uint64_t pinned = s_gencastAnnounceIdentity.pin(lobbyId, currentMatchId, pinnedNow);
+
+		if (pinnedNow)
+		{
+			GencastDebugLog("gencast: announce identity pinned lobby=%s match_id=%llu "
+				"(GO reports %llu; a later id must not move the relay's entry)",
+				lobbyId.c_str(), (unsigned long long)pinned, (unsigned long long)currentMatchId);
+		}
+		else if (currentMatchId != 0 && currentMatchId != pinned)
+		{
+			// The exact case that produced two games: say it once per announce so the log shows
+			// the identity held while GO's own id arrived.
+			GencastDebugLog("gencast: announce identity held lobby=%s pinned=%llu GO_now=%llu",
+				lobbyId.c_str(), (unsigned long long)pinned, (unsigned long long)currentMatchId);
+		}
+
+		return pinned;
 	}
 
 class RelayGencastTransport : public GencastTransport
@@ -1268,7 +1303,8 @@ class RelayGencastTransport : public GencastTransport
 
 			nlohmann::json request;
 			request["lobby_id"] = lobbyId;
-			request["match_id"] = std::to_string(CurrentMatchId());
+			// The pinned pair: a chat line has to land on the entry the announce created.
+			request["match_id"] = std::to_string(GencastPinnedMatchId(lobbyId, CurrentMatchId()));
 			request["from"] = from;
 			// The relay has two kinds on one channel; this one only ever posts what a player
 			// typed, and marks it so a watcher's own lines stay distinguishable.
@@ -1377,7 +1413,9 @@ class RelayGencastTransport : public GencastTransport
 			request["player_id"] = m_playerId;
 			// A uint64 as a string: JSON numbers are doubles to some readers, and GO's match ids
 			// are handed out by a service this client does not control.
-			request["match_id"] = std::to_string(matchId);
+			// The same pin the announce used: end and unannounce must resolve to the entry the
+			// announce created, whatever GO reports by now.
+			request["match_id"] = std::to_string(GencastPinnedMatchId(lobbyId, matchId));
 
 			if (reason != nullptr)
 			{
@@ -1474,14 +1512,8 @@ class RelayGencastTransport : public GencastTransport
 			// GO said (or a GO that never sends MatchID). It is sent rather than omitted: the
 			// relay then keys the entry on the lobby id - the game stays watchable - and logs
 			// the anomaly on both sides instead of dropping the entry.
-			const uint64_t matchId = CurrentMatchId();
-
-			if (matchId == 0)
-			{
-				GencastDebugLog("gencast: announce lobby=%s has no match id (GetCurrentMatchID=0), "
-					"the relay will key this entry on the lobby id",
-					lobbyId.c_str());
-			}
+			// Pinned by the first announce for this lobby, not read fresh: see GencastPinnedMatchId.
+			const uint64_t matchId = GencastPinnedMatchId(lobbyId, CurrentMatchId());
 
 			request["match_id"] = std::to_string(matchId);
 
