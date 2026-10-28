@@ -262,8 +262,13 @@ static Bool isStreamHost(NGMP_OnlineServices_LobbyInterface* lobby)
 // normally come from, is not included here.
 extern GameWindow *listboxGameSetupChat;
 
+/// Direct mode carries the lobby through the relay, and the relay implements neither of the two
+/// observer commands: both refusals therefore end on the same reason, written once here.
+static const WideChar* const GENCAST_NOT_UNTIL_RELAY_SUPPORTS = L" until the relay supports it.";
+
 /// GO answers /observerchat and /observers for the lobby host alone, so a streamer without the seat
-/// would pass the gate above and then watch a silent server refusal.
+/// would pass the gate above and then watch a silent server refusal. Services mode only: in direct
+/// mode every player, the host included, is refused before this point.
 static Bool refuseHostOnlyChange(NGMP_OnlineServices_LobbyInterface* lobby, Color color)
 {
 	if (lobby != nullptr && lobby->IsHost())
@@ -271,25 +276,23 @@ static Bool refuseHostOnlyChange(NGMP_OnlineServices_LobbyInterface* lobby, Colo
 		return FALSE;
 	}
 
-	GadgetListBoxAddEntryText(listboxGameSetupChat,
-		UnicodeString(L"Only the lobby host can change this until the relay supports it."),
-		color, -1, -1);
+	UnicodeString message(L"Only the lobby host can change this");
+	message.concat(GENCAST_NOT_UNTIL_RELAY_SUPPORTS);
+
+	GadgetListBoxAddEntryText(listboxGameSetupChat, message, color, -1, -1);
 
 	return TRUE;
 }
 
-/// The refusal has to name the real reason. In services mode the seat is the qualification, so
-/// the host is the one to appeal to; direct mode has no relay support for these commands, so
-/// every player gets the same answer rather than an appeal to a role that cannot act.
-static UnicodeString streamCommandRefusal(const WideChar* servicesRefusal,
-	const WideChar* directRefusal)
+/// In direct mode the GO write behind these commands lands in a lobby field the relay never reads,
+/// so the host would see nothing happen and nobody would be told why. Both commands therefore
+/// refuse every player, the host included, before the host gate is asked at all. /observers only
+/// asks for the roster, so its sentence must not claim that anything is being changed.
+static void addDirectModeObserverCommandRefusal(const WideChar* command, Color color)
 {
-	if (GencastDirectModeConfigured())
-	{
-		return UnicodeString(directRefusal);
-	}
-
-	return UnicodeString(servicesRefusal);
+	UnicodeString message(command);
+	message.concat(GENCAST_NOT_UNTIL_RELAY_SUPPORTS);
+	GadgetListBoxAddEntryText(listboxGameSetupChat, message, color, -1, -1);
 }
 
 /// Validate and store a broadcast delay. Rejects rather than clamps: silently turning "6000"
@@ -3878,9 +3881,10 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		{
 			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/delay <seconds> - Sets how far behind live observers are held (host only)."), helpColor, -1, -1);
 		}
-		// GO answers /observers and /observerchat for the lobby host alone, and the relay refuses
-		// both for everyone in direct mode until it supports them, so the help must not offer them
-		// there. Same test as the password lines below: the help lists only what a player can run.
+		// GO answers /observers and /observerchat for the lobby host alone, and in direct mode this
+		// client refuses both for everyone, the host included, until the relay supports them, so
+		// the help must not offer them there. Same test as the password lines below: the help
+		// lists only what a player can run.
 		if (!directMode)
 		{
 			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observers - Announces who is watching this lobby (host only)."), helpColor, -1, -1);
@@ -4017,6 +4021,16 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 	}
 	else if (token == "observerchat" && uText.getLength() > 14)
 	{
+		// The relay has no observer chat at all. A direct-mode host would change a lobby field the
+		// relay never reads and nobody would be told, so refuse before the host gate: in direct
+		// mode no player, the host included, may reach the GO call below.
+		if (GencastDirectModeConfigured())
+		{
+			addDirectModeObserverCommandRefusal(L"Observer chat is not available in direct mode",
+				GameSpyColor[GSCOLOR_CHAT_NORMAL]);
+			return TRUE; // was a slash command
+		}
+
 		NGMP_OnlineServicesManager* pOnlineServicesMgr = NGMP_OnlineServicesManager::GetInstance();
 		if (pOnlineServicesMgr != nullptr)
 		{
@@ -4055,9 +4069,8 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 					}
 					else
 					{
-						GadgetListBoxAddEntryText(listboxGameSetupChat, streamCommandRefusal(
-							L"You must be the lobby host to toggle observer chat.",
-							L"Only the lobby host can change this until the relay supports it."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
+						// Services mode only: direct mode is refused above, before the host gate.
+						GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"You must be the lobby host to toggle observer chat."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 						return TRUE; // was a slash command
 					}
 				}
@@ -4138,6 +4151,16 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 	}
 	else if (token == "observers")
 	{
+		// The relay cannot announce a roster either, so in direct mode this request would reach a
+		// GO call nobody answers. Refuse before the host gate: no player, the host included, may
+		// reach SendObserverListRequest below.
+		if (GencastDirectModeConfigured())
+		{
+			addDirectModeObserverCommandRefusal(L"The observer list is not available in direct mode",
+				GameSpyColor[GSCOLOR_CHAT_NORMAL]);
+			return TRUE; // was a slash command
+		}
+
 		NGMP_OnlineServicesManager* pOnlineServicesMgr = NGMP_OnlineServicesManager::GetInstance();
 		if (pOnlineServicesMgr != nullptr)
 		{
@@ -4160,9 +4183,8 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 					}
 					else
 					{
-						GadgetListBoxAddEntryText(listboxGameSetupChat, streamCommandRefusal(
-							L"You must be the lobby host to list observers.",
-							L"Only the lobby host can change this until the relay supports it."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
+						// Services mode only: direct mode is refused above, before the host gate.
+						GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"You must be the lobby host to list observers."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 					}
 				}
 			}
