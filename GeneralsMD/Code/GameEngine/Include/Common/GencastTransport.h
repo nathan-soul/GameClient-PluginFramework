@@ -481,12 +481,7 @@ void GencastPostWatcherChat(const AsciiString& lobbyId, const AsciiString& text)
 */
 void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, bool isAnnouncement);
 
-/// Arms or cancels the countdown mirror on a client that is not the lobby host, from a lobby
-/// announcement: the host's start line, or any other line (which means it changed the lobby).
 void GencastNoteLobbyAnnouncement(const std::string& message, bool isAnnouncement);
-
-/// Arms the same mirror from GO's START_GAME_COUNTDOWN_STARTED, when the service fans it out to
-/// members. Logs which detector fired, so a run says whether this path is live at all.
 void GencastNoteHostCountdownStarted();
 
 /// A lobby line this client typed itself. Whoever types posts: the old path only forwarded the

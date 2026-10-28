@@ -2,23 +2,8 @@
 
 #include <string>
 
-/*
-**  GencastAnnounceIdentity - the (lobby, match) pair a client repeats to the relay.
-**
-**  The relay keys a watch entry on the match id when it has one and on the lobby id otherwise
-**  (WatchRegistry.KeyFor). GO mints the match id when the match is created, i.e. when the lobby's
-**  countdown ends, so during pregame GetCurrentMatchID() is 0 and from the first frame of the
-**  match it is not. A client that sends what it currently has therefore announces the same game
-**  under two identities: the pregame entry keyed on the lobby id, and a second entry keyed on the
-**  match id. Watchers who joined the pregame entry keep waiting on a lobby that never goes live,
-**  while a duplicate game appears in the list.
-**
-**  So the identity is pinned by the first announce for a lobby, and every later announce, end and
-**  unannounce for that lobby quotes the same pair. Lobbies are per game in GO, and a new lobby is a
-**  new pin.
-**
-**  Engine-free so tools/announce_identity_test.sh can compile this exact header.
-*/
+// The (lobby, match) pair a client repeats to the relay: GO mints the match id only when the
+// match starts, so the first announce pins it. See tools/run_announce_identity_test.sh.
 
 struct GencastAnnounceIdentity
 {

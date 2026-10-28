@@ -1046,9 +1046,6 @@ Bool LiveObserver::isWithinBroadcastDelay(UnsignedInt curFrame) const
 
 void LiveObserver::logStreamEnd(const char* source, const char* detail)
 {
-	// The state at the moment the end was noticed, not after: the game frame says whether this
-	// ended a running match or arrived after it, and connected/playback say whether the watcher
-	// had anything on screen to lose.
 	liveObserverLog("gencast: watcher stream end source=%s%s%s (game_frame=%u live_edge=%u "
 		"connected=%d playback=%d delay_s=%u)\n",
 		source,
@@ -1219,9 +1216,6 @@ void liveObserverEndSession(void)
 {
 	liveObserverLog("liveObserverEndSession: observer=%s\n", TheLiveObserver ? "destroying" : "(none)");
 
-	// The last hop of every end: what the session was when it was closed, and whether a game was
-	// running. A watcher left on an empty map means this ran while isInInteractiveGame() was still
-	// true, or the shell never got its map back.
 	liveObserverLog("gencast: watcher stream end action=end-session (game_running=%d playback=%d "
 		"stream_ended=%d shell_map=%d)\n",
 		(TheGameLogic != nullptr && TheGameLogic->isInInteractiveGame()) ? 1 : 0,

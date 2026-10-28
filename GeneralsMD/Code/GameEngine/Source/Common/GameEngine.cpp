@@ -1032,18 +1032,11 @@ void GameEngine::update()
 		{
 			TheLiveObserver->updatePlaybackGate(TheGameLogic->getFrame());
 
-			// The stream is over while the match is still being played: the streamer left the game,
-			// or the relay gave up waiting for them to come back. Nothing later in the replay ends
-			// this match, so the watcher would sit on the last frame for ever - which reads as
-			// "paused" and is what a watcher reported. Leave the way the in-game Exit button does.
-			//
-			// The condition, not a latch, is the state: a match that ends on its own stops being
-			// interactive before END arrives, so a normal finish keeps its score screen. The short
-			// grace is for the moment between a victory and the shell taking over.
+			// A stream that ends before the match does would leave the watcher on its last frame.
 			static UnsignedInt s_streamOverSeenMs = 0;
 
-			if (TheLiveObserver->isStreamEnded() && TheGameLogic->isInInteractiveGame() &&
-				!TheGameLogic->isInGameLogicUpdate())
+			if (TheLiveObserver->isStreamEnded() && TheLiveObserver->hasPlaybackStarted()
+				&& TheGameLogic->isInInteractiveGame() && !TheGameLogic->isInGameLogicUpdate())
 			{
 				if (s_streamOverSeenMs == 0)
 				{
@@ -1053,41 +1046,17 @@ void GameEngine::update()
 				{
 					s_streamOverSeenMs = 0;
 					liveObserverLog("gencast: watcher stream end action=leave-view via=stopPlayback "
-						"(game_frame=%u interactive=%d shell_map=%d)\n",
-						TheGameLogic->getFrame(), TheGameLogic->isInInteractiveGame() ? 1 : 0,
+						"(game_frame=%u playback=%d interactive=%d shell_map=%d)\n",
+						TheGameLogic->getFrame(), TheLiveObserver->hasPlaybackStarted() ? 1 : 0,
+						TheGameLogic->isInInteractiveGame() ? 1 : 0,
 						TheWritableGlobalData != nullptr && TheWritableGlobalData->m_shellMapOn ? 1 : 0);
 
-					// Say why before the view goes: a watcher whose stream simply stopped had no
-					// way to tell a pause from an end, and the picture it left behind read as a
-					// frozen game.
 					if (TheInGameUI != nullptr)
 					{
 						TheInGameUI->message(UnicodeString(L"The stream has ended - the host is no longer sending"));
 					}
 
-					// The shell's backdrop is a map, not the destroyed world. liveObserverEndSession()
-					// sets this too, but only after the game data has been cleared - and that gap is
-					// the grey screen a watcher sees behind the menu while it opens.
-					if (TheWritableGlobalData != nullptr)
-					{
-						TheWritableGlobalData->m_shellMapOn = TRUE;
-					}
-
-					// The teardown is the PR's, not a second one of ours. RecorderClass::stopPlayback
-					// is the single way a live session ends there - it closes the session, restores
-					// the shell map through liveObserverEndSession() and calls exitGame(), which is
-					// what asks for the score screen. Calling clearGameData() here instead cleared a
-					// match this client had not finished and left the shell with no world to draw.
-					//
-					// This watchdog stays because the PR's path needs the playback to reach the end
-					// of the buffered records (readNextFrame -> "end of stream at offset ... stopping
-					// playback"), and a held gate or a stream that never delivered another record
-					// can leave a watcher on a frozen last frame. When it does fire, it fires the
-					// same teardown the PR uses.
-					if (TheRecorder != nullptr && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
-					{
-						TheRecorder->stopPlayback();
-					}
+					TheRecorder->stopPlayback();
 				}
 			}
 			else

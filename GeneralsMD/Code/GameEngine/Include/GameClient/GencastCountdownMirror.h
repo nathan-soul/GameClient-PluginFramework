@@ -1,27 +1,7 @@
 #pragma once
 
-/*
-**  GencastMirrorCountdown - the countdown as seen by a client that is not running it.
-**
-**  The countdown lives on exactly one machine: NGMPGame::StartCountdown() is called from the lobby
-**  host's StartPressed(), and every other client only learns that the match is about to begin from
-**  what the host broadcasts. When that host runs a plain GO client - no GenCast code - nothing about
-**  the countdown reaches the relay at all, and a pregame watcher shows nothing while the players
-**  count down.
-**
-**  A member's client does get two useful things:
-**
-**    1. the host's announcement line just before it starts the countdown
-**       (SendAnnouncementMessageToCurrentLobby with LAN:GameStartTimerPlural), and
-**    2. the ready flags collapsing back, because every lobby change resets readiness - which is
-**       also what stops the host's countdown.
-**
-**  So: arm on (1), cancel on (2), and the relay receives an absolute end this client computed from
-**  its own system_clock. No utc_clock skew to correct, because the number is made here.
-**
-**  Engine-free on purpose, so tools/countdown_mirror_test.sh compiles this exact header instead of a
-**  copy of the rule.
-*/
+// The countdown as seen by a client that is not running it: arm from the host's start line,
+// cancel when the lobby goes un-ready. Engine-free so tools/countdown_mirror_test.sh can compile it.
 
 struct GencastMirrorCountdown
 {

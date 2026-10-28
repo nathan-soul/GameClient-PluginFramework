@@ -293,12 +293,7 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		return lobbyId;
 	}
 
-	// A streamer is not necessarily the lobby host. When it is not, its client has no countdown of
-	// its own to publish: NGMPGame::StartCountdown() runs on the host's machine, and a host that is
-	// a plain GO client has no GenCast code to tell the relay about it. What a member does see is the
-	// host's start line, and readiness collapsing when the host calls it off - that is what
-	// GencastCountdownMirror turns into an end this client can announce. The rule and the cases it
-	// has to survive live in GameClient/GencastCountdownMirror.h and tools/countdown_mirror_test.sh.
+	// A member's client mirrors the host's countdown (see GencastCountdownMirror.h).
 	static std::mutex s_gencastMirrorCountdownMutex;
 	static GencastMirrorCountdown s_gencastMirrorCountdown;
 
@@ -425,10 +420,6 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 				GencastDebugLog("gencast: countdown mirror armed via=announcement ends_in_ms=%d "
 					"(this client is not the lobby host)", duration * 1000);
 			}
-			// Nothing here cancels on "some other announcement": a lobby sends those for joins, for
-			// readiness and for the connection check, all of which arrive inside the five seconds and
-			// none of which mean the countdown is off. Cancellation is the lobby going un-ready, which
-			// is the same event that stops the host's own countdown - see GencastMirrorCountdownEndsAt.
 		}
 
 		if (announce)
@@ -465,13 +456,7 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		GencastAnnounceCurrentLobby();
 	}
 
-	// The identity the relay keys this client's entry on. GO mints a lobby's match id when the
-	// match is created - i.e. when the countdown ends - so the same game would be announced under
-	// the lobby id for the whole pregame and under the match id from the first frame on. The relay
-	// keys those two differently (WatchRegistry.KeyFor), which is two games in the list: the
-	// pregame entry that never goes live with watchers attached to it, and a live duplicate. The
-	// pin lives in GencastAnnounceIdentity.h (and tools/run_announce_identity_test.sh), and every
-	// announce, end and unannounce for a lobby quotes the pinned pair.
+	// Pinned by the first announce for a lobby (see GencastAnnounceIdentity.h).
 	static std::mutex s_gencastAnnounceIdentityMutex;
 	static GencastAnnounceIdentity s_gencastAnnounceIdentity;
 
@@ -490,8 +475,6 @@ bool Perform(const std::string& url, const char* postBody, HttpResponse& out)
 		}
 		else if (currentMatchId != 0 && currentMatchId != pinned)
 		{
-			// The exact case that produced two games: say it once per announce so the log shows
-			// the identity held while GO's own id arrived.
 			GencastDebugLog("gencast: announce identity held lobby=%s pinned=%llu GO_now=%llu",
 				lobbyId.c_str(), (unsigned long long)pinned, (unsigned long long)currentMatchId);
 		}
@@ -1303,7 +1286,6 @@ class RelayGencastTransport : public GencastTransport
 
 			nlohmann::json request;
 			request["lobby_id"] = lobbyId;
-			// The pinned pair: a chat line has to land on the entry the announce created.
 			request["match_id"] = std::to_string(GencastPinnedMatchId(lobbyId, CurrentMatchId()));
 			request["from"] = from;
 			// The relay has two kinds on one channel; this one only ever posts what a player
@@ -1413,8 +1395,6 @@ class RelayGencastTransport : public GencastTransport
 			request["player_id"] = m_playerId;
 			// A uint64 as a string: JSON numbers are doubles to some readers, and GO's match ids
 			// are handed out by a service this client does not control.
-			// The same pin the announce used: end and unannounce must resolve to the entry the
-			// announce created, whatever GO reports by now.
 			request["match_id"] = std::to_string(GencastPinnedMatchId(lobbyId, matchId));
 
 			if (reason != nullptr)
@@ -1512,7 +1492,6 @@ class RelayGencastTransport : public GencastTransport
 			// GO said (or a GO that never sends MatchID). It is sent rather than omitted: the
 			// relay then keys the entry on the lobby id - the game stays watchable - and logs
 			// the anomaly on both sides instead of dropping the entry.
-			// Pinned by the first announce for this lobby, not read fresh: see GencastPinnedMatchId.
 			const uint64_t matchId = GencastPinnedMatchId(lobbyId, CurrentMatchId());
 
 			request["match_id"] = std::to_string(matchId);
@@ -1545,18 +1524,6 @@ class RelayGencastTransport : public GencastTransport
 			// lobby (pregame) and from the streamer at match start (live).
 			request["state"] = GencastStreamStateName(state);
 
-			// The countdown, from whichever client is in a position to know it.
-			//
-			// The lobby host runs the real thing: NGMPGame::StartCountdown is the one place it
-			// begins (and the place that tells Services; SendData_CountdownStarted also nudges
-			// this announce), while every cancel path - a field change, a departure, the countdown
-			// running out, START_GAME - stops it there. A live announce never carries one: the
-			// relay only shows it on a lobby that is still seating.
-			//
-			// A streamer is not necessarily the lobby host, though, and then its own NGMPGame never
-			// starts a countdown: START_GAME_COUNTDOWN_STARTED goes to Services with no handler on
-			// the receiving side, and the lobby object carries no timer. All that client sees is
-			// the host's announcement right before the start, which arms the mirror below.
 			int64_t mirroredEndsAtUnixMs = 0;
 
 			const bool mirroredCountdown = state == EGencastStreamState::Pregame &&
