@@ -927,6 +927,18 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	const Int error = (Int)gap - (Int)targetLead;
 	Int correction = error / LIVE_PACE_CORRECTION_SECONDS;
 
+	// Playback keeps the host's rate instead of racing it. Being behind does not license a
+	// speed-up: the extra lead is a delay the viewer cannot see, and spending it visibly (a
+	// picture 10% faster than the match) was the whole complaint. The single exception is a lead
+	// that has grown a full release margin past target - there a 1 fps trim is allowed, because
+	// the rate estimate is an integer and otherwise rounding drifts the picture further behind
+	// over a long match, one frame at a time, until the delay is measured in seconds.
+	if (correction > 0)
+	{
+		const UnsignedInt trimAbove = targetLead + LIVE_GATE_RELEASE_MARGIN_FRAMES;
+		correction = (gap > trimAbove) ? 1 : 0;
+	}
+
 	// Bound the correction relative to the source, not absolutely. The correction is meant to
 	// nudge the pace so the lead drifts back to target; at 60 fps a raw +8 is a 13% nudge, but at
 	// a source rate of 3 it is +267% and playback stops matching the match in any useful sense -
