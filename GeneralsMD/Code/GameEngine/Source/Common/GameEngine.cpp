@@ -1052,8 +1052,8 @@ void GameEngine::update()
 				else if (timeGetTime() - s_streamOverSeenMs > 3000)
 				{
 					s_streamOverSeenMs = 0;
-					liveObserverLog("gencast: watcher stream end action=leave-view (game_frame=%u "
-						"interactive=%d shell_map=%d) - clearing the game and returning to the shell\n",
+					liveObserverLog("gencast: watcher stream end action=leave-view via=stopPlayback "
+						"(game_frame=%u interactive=%d shell_map=%d)\n",
 						TheGameLogic->getFrame(), TheGameLogic->isInInteractiveGame() ? 1 : 0,
 						TheWritableGlobalData != nullptr && TheWritableGlobalData->m_shellMapOn ? 1 : 0);
 
@@ -1066,15 +1066,28 @@ void GameEngine::update()
 					}
 
 					// The shell's backdrop is a map, not the destroyed world. liveObserverEndSession()
-					// sets this too, but only after clearGameData() has run - and that gap is the
-					// grey screen a watcher sees behind the menu while it opens. Turning it on first
-					// means the shell already has something to draw when the world goes.
+					// sets this too, but only after the game data has been cleared - and that gap is
+					// the grey screen a watcher sees behind the menu while it opens.
 					if (TheWritableGlobalData != nullptr)
 					{
 						TheWritableGlobalData->m_shellMapOn = TRUE;
 					}
 
-					TheGameLogic->clearGameData();
+					// The teardown is the PR's, not a second one of ours. RecorderClass::stopPlayback
+					// is the single way a live session ends there - it closes the session, restores
+					// the shell map through liveObserverEndSession() and calls exitGame(), which is
+					// what asks for the score screen. Calling clearGameData() here instead cleared a
+					// match this client had not finished and left the shell with no world to draw.
+					//
+					// This watchdog stays because the PR's path needs the playback to reach the end
+					// of the buffered records (readNextFrame -> "end of stream at offset ... stopping
+					// playback"), and a held gate or a stream that never delivered another record
+					// can leave a watcher on a frozen last frame. When it does fire, it fires the
+					// same teardown the PR uses.
+					if (TheRecorder != nullptr && TheRecorder->getMode() == RECORDERMODETYPE_LIVE_OBSERVER)
+					{
+						TheRecorder->stopPlayback();
+					}
 				}
 			}
 			else
