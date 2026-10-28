@@ -136,6 +136,12 @@ LiveObserver::LiveObserver()
 	, m_sourceFps(0)
 	, m_paceFps(LOGICFRAMES_PER_SECOND)
 	, m_lastPaceApplyMs(0)
+	, m_lastPaceDesired(LOGICFRAMES_PER_SECOND)
+	, m_lastPaceCorrection(0)
+	, m_lastPaceResult("none")
+	, m_lastPaceLogMs(0)
+	, m_lastGateLogRec(0)
+	, m_lastGateLogHb(0)
 	, m_paceMatchingEnabled(TRUE)
 	, m_pacerTouched(FALSE)
 	, m_savedLogicScaleFps(0)
@@ -808,15 +814,22 @@ void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
 		{
 			const UnsignedInt playedFrames = (curFrame > m_lastGateLogFrame) ? (curFrame - m_lastGateLogFrame) : 0;
 			const UnsignedInt sourceFrames = (liveEdge > m_lastGateLogEdge) ? (liveEdge - m_lastGateLogEdge) : 0;
-			liveObserverLog("GATE: cur=%u (%u/s) edge=%u (%u/s) src=%u pace=%u rec=%u hb=%u gap=%u "
-				"engage=%u release=%u hold=%d preroll=%d stall=%d underruns=%u safeOff=%d\n",
+			const UnsignedInt recFrame = m_maxCompleteFrame.load();
+			const UnsignedInt hbFrame = m_liveFrameHint.load();
+			const UnsignedInt recFrames = (recFrame > m_lastGateLogRec) ? (recFrame - m_lastGateLogRec) : 0;
+			const UnsignedInt hbFrames = (hbFrame > m_lastGateLogHb) ? (hbFrame - m_lastGateLogHb) : 0;
+			liveObserverLog("GATE: cur=%u (%u/s) edge=%u (%u/s) src=%u host=%u pace=%u rec=%u (%u/s) "
+				"hb=%u (%u/s) gap=%u engage=%u release=%u hold=%d preroll=%d stall=%d underruns=%u safeOff=%d\n",
 				curFrame, playedFrames * 1000 / elapsedMs,
 				liveEdge, sourceFrames * 1000 / elapsedMs,
-				m_sourceFps, m_paceFps,
-				m_maxCompleteFrame.load(), m_liveFrameHint.load(),
+				m_sourceFps, m_srcLogicFps.load(), m_paceFps,
+				recFrame, recFrames * 1000 / elapsedMs,
+				hbFrame, hbFrames * 1000 / elapsedMs,
 				gap, engageBelow, releaseAbove,
 				m_holdPlayback ? 1 : 0, m_preRollComplete ? 1 : 0, m_stalled ? 1 : 0,
 				m_underrunCount, m_safeReadOffset.load());
+			m_lastGateLogRec = recFrame;
+			m_lastGateLogHb = hbFrame;
 		}
 		m_lastGateLogMs = nowMs;
 		m_lastGateLogFrame = curFrame;
@@ -894,7 +907,10 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	const Bool fastForwarding = (TheGlobalData != nullptr && TheGlobalData->m_TiVOFastMode);
 	if (!m_paceMatchingEnabled || !m_preRollComplete || streamEnded || fastForwarding || m_sourceFps == 0)
 	{
-		applyPaceFps(LOGICFRAMES_PER_SECOND);
+		m_lastPaceDesired = LOGICFRAMES_PER_SECOND;
+		m_lastPaceCorrection = 0;
+		m_lastPaceResult = applyPaceFps(LOGICFRAMES_PER_SECOND);
+		logPaceTrace(nowMs, gap, targetLead);
 		return;
 	}
 
@@ -927,13 +943,16 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	if (desired < LIVE_PACE_MIN_FPS)
 		desired = LIVE_PACE_MIN_FPS;
 
-	applyPaceFps(desired);
+	m_lastPaceDesired = desired;
+	m_lastPaceCorrection = correction;
+	m_lastPaceResult = applyPaceFps(desired);
+	logPaceTrace(nowMs, gap, targetLead);
 }
 
-void LiveObserver::applyPaceFps(Int paceFps)
+const char* LiveObserver::applyPaceFps(Int paceFps)
 {
 	if (TheFramePacer == nullptr)
-		return;
+		return "nopacer";
 
 	// Returning to nominal is always allowed through: it is the safe state, and making it wait on
 	// the hysteresis below would leave playback slowed after the reason for slowing had gone.
@@ -942,15 +961,15 @@ void LiveObserver::applyPaceFps(Int paceFps)
 	{
 		const Int delta = (paceFps > (Int)m_paceFps) ? (paceFps - (Int)m_paceFps) : ((Int)m_paceFps - paceFps);
 		if (delta < LIVE_PACE_MIN_STEP_FPS)
-			return;
+			return "step";
 		const UnsignedInt nowMs = timeGetTime();
 		if (m_lastPaceApplyMs != 0 && (nowMs - m_lastPaceApplyMs) < (UnsignedInt)LIVE_PACE_MIN_INTERVAL_MS)
-			return;
+			return "interval";
 		m_lastPaceApplyMs = nowMs;
 	}
 
 	if (toNominal && m_paceFps == (UnsignedInt)LOGICFRAMES_PER_SECOND)
-		return;   // already there; do not touch the pacer every tick
+		return "nominal";   // already there; do not touch the pacer every tick
 
 	// Latch what the pacer looked like before this session touched it, so ending the session can
 	// hand it back unchanged. Done here rather than at construction because the pacer may not be
@@ -973,6 +992,27 @@ void LiveObserver::applyPaceFps(Int paceFps)
 	TheFramePacer->setLogicTimeScaleFps(paceFps);
 
 	m_paceFps = (UnsignedInt)paceFps;
+	return "applied";
+}
+
+void LiveObserver::logPaceTrace(UnsignedInt nowMs, UnsignedInt gap, UnsignedInt targetLead)
+{
+	if (nowMs - m_lastPaceLogMs < 1000)
+		return;
+	m_lastPaceLogMs = nowMs;
+
+	const Real selfFps = (TheFramePacer != nullptr) ? TheFramePacer->getUpdateFps() : 0.0f;
+	const Real ratio = (TheFramePacer != nullptr) ? TheFramePacer->getActualLogicTimeScaleRatio() : 0.0f;
+	const Int scaleFps = (TheFramePacer != nullptr) ? TheFramePacer->getLogicTimeScaleFps() : 0;
+	const Int scaleOn = (TheFramePacer != nullptr && TheFramePacer->isLogicTimeScaleEnabled()) ? 1 : 0;
+	const Int maxRender = (TheFramePacer != nullptr) ? TheFramePacer->getActualFramesPerSecondLimit() : 0;
+
+	liveObserverLog("PACE: src=%u host=%u target=%u gap=%u err=%d corr=%d desired=%d pace=%u "
+		"result=%s self=%.1f ratio=%.3f scale=%d enabled=%d maxRender=%d matching=%d\n",
+		m_sourceFps, m_srcLogicFps.load(), targetLead, gap,
+		(Int)gap - (Int)targetLead, m_lastPaceCorrection, m_lastPaceDesired, m_paceFps,
+		m_lastPaceResult, selfFps, ratio, scaleFps, scaleOn, maxRender,
+		m_paceMatchingEnabled ? 1 : 0);
 }
 
 void LiveObserver::restorePlaybackPace()

@@ -311,7 +311,8 @@ private:
 	void updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, UnsignedInt targetLead, Bool streamEnded);
 
 	/// Push a pace onto TheFramePacer, or leave it alone if nothing changed.
-	void applyPaceFps(Int paceFps);
+	const char* applyPaceFps(Int paceFps);
+	void logPaceTrace(UnsignedInt nowMs, UnsignedInt gap, UnsignedInt targetLead);
 
 	/// Connect via WebSocket (called from network thread).
 	bool connectToRelay();
@@ -455,6 +456,12 @@ private:
 	UnsignedInt m_sourceFps;		// measured source rate, 0 until the window has filled
 	UnsignedInt m_paceFps;			// what we are currently playing at
 	UnsignedInt m_lastPaceApplyMs;
+	Int m_lastPaceDesired;			// what the controller asked for on the last tick
+	Int m_lastPaceCorrection;		// the lead-repayment term behind that ask
+	const char* m_lastPaceResult;	// applyPaceFps outcome: applied|nominal|step|interval|nopacer
+	UnsignedInt m_lastPaceLogMs;
+	UnsignedInt m_lastGateLogRec;	// previous complete-frame counter, for the arrival rate
+	UnsignedInt m_lastGateLogHb;	// previous heartbeat edge, same reason
 	Bool m_paceMatchingEnabled;		// F8; see isPaceMatchingEnabled
 
 	// The pacer is global engine state, so this session records what it found on first touch and
