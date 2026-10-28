@@ -211,6 +211,9 @@ private:
 	// observer derives for itself from the live edge.
 	UnsignedInt m_statsLastFrame;
 	UnsignedInt m_statsLastFrameMs;
+	UnsignedInt m_statsLogMs;		// once-a-second host-side rate log
+	UnsignedInt m_statsLogFrame;
+	UnsignedInt m_statsLogAtMs;
 
 	// UI-informational flags; m_isBackup additionally gates data flow (see onRoleAssigned)
 	std::atomic<Bool> m_isStreaming;

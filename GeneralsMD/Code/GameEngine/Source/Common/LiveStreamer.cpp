@@ -140,6 +140,9 @@ LiveStreamer::LiveStreamer()
 	, m_lastStatsSentMs(0)
 	, m_statsLastFrame(0)
 	, m_statsLastFrameMs(0)
+	, m_statsLogMs(0)
+	, m_statsLogFrame(0)
+	, m_statsLogAtMs(0)
 	, m_isStreaming(false)
 	, m_isBackup(false)
 	, m_connected(false)
@@ -681,6 +684,25 @@ void LiveStreamer::publishStats(UnsignedInt frame)
 	}
 	m_statsLastFrame = frame;
 	m_statsLastFrameMs = nowMs;
+
+	// Host-side truth, once a second: what this client renders, what its logic counter advances,
+	// and what it publishes. The HUD's plain counter is the render rate; only the frame counter is
+	// the match, and the two are not the same number.
+	if (nowMs - m_statsLogMs >= 1000 && TheGameLogic != nullptr)
+	{
+		const UnsignedInt curFrame = TheGameLogic->getFrame();
+		Int achieved = 0;
+		if (m_statsLogAtMs != 0 && nowMs > m_statsLogAtMs && curFrame > m_statsLogFrame)
+			achieved = (Int)((curFrame - m_statsLogFrame) * 1000 / (nowMs - m_statsLogAtMs));
+		const Int renderFps = (TheFramePacer != nullptr) ? (Int)(TheFramePacer->getUpdateFps() + 0.5f) : 0;
+		const Int negotiated = (TheNetwork != nullptr) ? TheNetwork->getFrameRate() : 0;
+		liveStreamLog("STATS: frame=%u logic=%d publish=%d render=%d negotiated=%d paused=%d\n",
+			curFrame, achieved, logicFps, renderFps, negotiated,
+			TheGameLogic->isGamePaused() ? 1 : 0);
+		m_statsLogMs = nowMs;
+		m_statsLogFrame = curFrame;
+		m_statsLogAtMs = nowMs;
+	}
 
 	if (logicFps < 0)
 		return;   // nothing measured yet, and nothing worth sending
