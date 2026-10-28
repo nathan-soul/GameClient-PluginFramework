@@ -914,6 +914,13 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 		return;
 	}
 
+	// Prefer the rate the streamer measures on itself: it is a frame counter over wall clock, sent
+	// every stats interval, so it does not inherit the heartbeat quantisation that makes the edge
+	// slope read 50 one second and 60 the next. The slope stays the fallback for an older streamer
+	// that does not report one.
+	const UnsignedInt reportedFps = m_srcLogicFps.load();
+	const UnsignedInt rateFps = (reportedFps > 0) ? reportedFps : m_sourceFps;
+
 	// Follow the source, plus a correction that repays or spends the difference between the lead
 	// we hold and the lead we want. The correction is what keeps the buffer at its target instead
 	// of wherever the last hiccup left it.
@@ -925,7 +932,7 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	// a source rate of 3 it is +267% and playback stops matching the match in any useful sense -
 	// it becomes a slow fast-forward (observed 2026-08-15: L: 3 against P: 11). Spending a
 	// backlog deliberately is what the F8 toggle is for, so the controller stays conservative.
-	Int maxCorrection = (Int)m_sourceFps / 2;
+	Int maxCorrection = (Int)rateFps / 2;
 	if (maxCorrection < LIVE_PACE_MIN_CORRECTION_FPS)
 		maxCorrection = LIVE_PACE_MIN_CORRECTION_FPS;
 	if (correction > maxCorrection)
@@ -933,7 +940,7 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	else if (correction < -maxCorrection)
 		correction = -maxCorrection;
 
-	Int desired = (Int)m_sourceFps + correction;
+	Int desired = (Int)rateFps + correction;
 
 	// Never above nominal: that would close the distance to the live game, which is the one thing
 	// the broadcast delay promises will not happen. Fast-forward owns catching up, and it already
@@ -1002,14 +1009,15 @@ void LiveObserver::logPaceTrace(UnsignedInt nowMs, UnsignedInt gap, UnsignedInt 
 	m_lastPaceLogMs = nowMs;
 
 	const Real selfFps = (TheFramePacer != nullptr) ? TheFramePacer->getUpdateFps() : 0.0f;
-	const Real ratio = (TheFramePacer != nullptr) ? TheFramePacer->getActualLogicTimeScaleRatio() : 0.0f;
+	const Bool scaleOnFlag = (TheFramePacer != nullptr && TheFramePacer->isLogicTimeScaleEnabled());
+	const Real ratio = scaleOnFlag ? TheFramePacer->getActualLogicTimeScaleRatio() : 1.0f;
 	const Int scaleFps = (TheFramePacer != nullptr) ? TheFramePacer->getLogicTimeScaleFps() : 0;
-	const Int scaleOn = (TheFramePacer != nullptr && TheFramePacer->isLogicTimeScaleEnabled()) ? 1 : 0;
+	const Int scaleOn = scaleOnFlag ? 1 : 0;
 	const Int maxRender = (TheFramePacer != nullptr) ? TheFramePacer->getActualFramesPerSecondLimit() : 0;
 
-	liveObserverLog("PACE: src=%u host=%u target=%u gap=%u err=%d corr=%d desired=%d pace=%u "
+	liveObserverLog("PACE: src=%u host=%u rate=%s target=%u gap=%u err=%d corr=%d desired=%d pace=%u "
 		"result=%s self=%.1f ratio=%.3f scale=%d enabled=%d maxRender=%d matching=%d\n",
-		m_sourceFps, m_srcLogicFps.load(), targetLead, gap,
+		m_sourceFps, m_srcLogicFps.load(), (m_srcLogicFps.load() > 0) ? "host" : "edge", targetLead, gap,
 		(Int)gap - (Int)targetLead, m_lastPaceCorrection, m_lastPaceDesired, m_paceFps,
 		m_lastPaceResult, selfFps, ratio, scaleFps, scaleOn, maxRender,
 		m_paceMatchingEnabled ? 1 : 0);

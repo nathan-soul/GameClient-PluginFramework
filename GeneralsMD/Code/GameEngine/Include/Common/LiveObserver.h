@@ -419,9 +419,10 @@ private:
 	enum { LIVE_PACE_MIN_CORRECTION_FPS = 2 };
 
 	// Do not touch the pacer for less than this, nor more often than this. A controller that
-	// chases every sample hunts, and hunting is more visible than the lag it corrects.
-	enum { LIVE_PACE_MIN_STEP_FPS = 2 };
-	enum { LIVE_PACE_MIN_INTERVAL_MS = 500 };
+	// chases every sample hunts, and hunting is more visible than the lag it corrects - but a
+	// wish smaller than the step never lands at all, so the pace freezes where it was last set.
+	enum { LIVE_PACE_MIN_STEP_FPS = 1 };
+	enum { LIVE_PACE_MIN_INTERVAL_MS = 250 };
 
 	// Buffering-gate state. Game thread only - updatePlaybackGate() is the sole writer.
 	Bool m_holdPlayback;			// playback must wait; the Recorder acts on this
