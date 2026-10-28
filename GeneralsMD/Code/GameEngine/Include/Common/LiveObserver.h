@@ -311,7 +311,7 @@ private:
 	void updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, UnsignedInt targetLead, Bool streamEnded);
 
 	/// Push a pace onto TheFramePacer, or leave it alone if nothing changed.
-	const char* applyPaceFps(Int paceFps);
+	const char* applyPaceFps(Real paceFps);
 	void logPaceTrace(UnsignedInt nowMs, UnsignedInt gap, UnsignedInt targetLead);
 
 	/// Connect via WebSocket (called from network thread).
@@ -424,6 +424,10 @@ private:
 	enum { LIVE_PACE_MIN_STEP_FPS = 1 };
 	enum { LIVE_PACE_MIN_INTERVAL_MS = 250 };
 
+	// The fractional threshold for touching the pacer: a tenth of a frame per second is enough to
+	// matter over a match, and too small to be visible in any single second.
+	enum { LIVE_PACE_MIN_STEP_MILLI_FPS = 100 };
+
 	// Buffering-gate state. Game thread only - updatePlaybackGate() is the sole writer.
 	Bool m_holdPlayback;			// playback must wait; the Recorder acts on this
 	Bool m_nearLiveHeld;			// latched: the near-live gate is holding (hysteresis)
@@ -455,10 +459,12 @@ private:
 	PaceSample m_paceSamples[LIVE_PACE_MAX_SAMPLES];
 	Int m_paceSampleCount;			// entries in use, oldest first
 	UnsignedInt m_sourceFps;		// measured source rate, 0 until the window has filled
+	Real m_sourceFpsReal;			// the same slope with its fraction: 54.3 fps is not 54
+	Real m_paceFpsReal;			// what we are playing at, with its fraction
 	UnsignedInt m_paceFps;			// what we are currently playing at
 	UnsignedInt m_lastPaceApplyMs;
-	Int m_lastPaceDesired;			// what the controller asked for on the last tick
-	Int m_lastPaceCorrection;		// the lead-repayment term behind that ask
+	Real m_lastPaceDesired;			// what the controller asked for on the last tick
+	Real m_lastPaceCorrection;		// the lead-repayment term behind that ask
 	const char* m_lastPaceResult;	// applyPaceFps outcome: applied|nominal|step|interval|nopacer
 	UnsignedInt m_lastPaceLogMs;
 	UnsignedInt m_lastGateLogRec;	// previous complete-frame counter, for the arrival rate

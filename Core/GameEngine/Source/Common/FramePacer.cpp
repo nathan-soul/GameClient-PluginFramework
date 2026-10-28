@@ -37,6 +37,7 @@ FramePacer::FramePacer()
 
 	m_maxFPS = BaseFps;
 	m_logicTimeScaleFPS = LOGICFRAMES_PER_SECOND;
+	m_logicTimeScaleFPSReal = (Real)LOGICFRAMES_PER_SECOND;
 	m_updateTime = 1.0f / (Real)BaseFps; // initialized to something to avoid division by zero on first use
 	m_enableFpsLimit = FALSE;
 	m_enableLogicTimeScale = FALSE;
@@ -159,12 +160,23 @@ Bool FramePacer::isGameHalted() const
 
 void FramePacer::setLogicTimeScaleFps( Int fps )
 {
-	m_logicTimeScaleFPS = fps;
+	setLogicTimeScaleFpsReal((Real)fps);
+}
+
+void FramePacer::setLogicTimeScaleFpsReal( Real fps )
+{
+	m_logicTimeScaleFPSReal = fps;
+	m_logicTimeScaleFPS = (Int)(fps + 0.5f);
 }
 
 Int FramePacer::getLogicTimeScaleFps() const
 {
 	return m_logicTimeScaleFPS;
+}
+
+Real FramePacer::getLogicTimeScaleFpsReal() const
+{
+	return m_logicTimeScaleFPSReal;
 }
 
 void FramePacer::enableLogicTimeScale( Bool enable )
@@ -179,40 +191,45 @@ Bool FramePacer::isLogicTimeScaleEnabled() const
 
 Int FramePacer::getActualLogicTimeScaleFps(LogicTimeQueryFlags flags) const
 {
+	return (Int)(getActualLogicTimeScaleFpsReal(flags) + 0.5f);
+}
+
+Real FramePacer::getActualLogicTimeScaleFpsReal(LogicTimeQueryFlags flags) const
+{
 	if (m_isTimeFrozen && (flags & IgnoreFrozenTime) == 0)
 	{
-		return 0;
+		return 0.0f;
 	}
 
 	if (m_isGameHalted && (flags & IgnoreHaltedGame) == 0)
 	{
-		return 0;
+		return 0.0f;
 	}
 
 	if (TheNetwork != nullptr)
 	{
-		return TheNetwork->getFrameRate();
+		return (Real)TheNetwork->getFrameRate();
 	}
 
 	if (isLogicTimeScaleEnabled())
 	{
-		return getLogicTimeScaleFps();
+		return getLogicTimeScaleFpsReal();
 	}
 
 	// Returns uncapped value to align with the render update as per the original game behavior.
-	return RenderFpsPreset::UncappedFpsValue;
+	return (Real)RenderFpsPreset::UncappedFpsValue;
 }
 
 Real FramePacer::getActualLogicTimeScaleRatio(LogicTimeQueryFlags flags) const
 {
-	return (Real)getActualLogicTimeScaleFps(flags) / LOGICFRAMES_PER_SECONDS_REAL;
+	return getActualLogicTimeScaleFpsReal(flags) / LOGICFRAMES_PER_SECONDS_REAL;
 }
 
 Real FramePacer::getActualLogicTimeScaleOverFpsRatio(LogicTimeQueryFlags flags) const
 {
 	// TheSuperHackers @info Clamps ratio to min 1, because the logic
 	// frame rate is currently capped by the render frame rate.
-	return min(1.0f, (Real)getActualLogicTimeScaleFps(flags) / getUpdateFps());
+	return min(1.0f, getActualLogicTimeScaleFpsReal(flags) / getUpdateFps());
 }
 
 Real FramePacer::getLogicTimeStepSeconds(LogicTimeQueryFlags flags) const

@@ -58,10 +58,13 @@ public:
 	Bool isGameHalted() const;
 
 	void setLogicTimeScaleFps( Int fps ); ///< Set the logic time scale fps and therefore scale the simulation time. Is capped by the max render fps and does not apply to network matches.
+	void setLogicTimeScaleFpsReal( Real fps ); ///< Fractional variant: a viewer can hold 54.3 fps instead of rounding the match to 54.
 	Int  getLogicTimeScaleFps() const; ///< Get the raw logic time scale fps value.
+	Real getLogicTimeScaleFpsReal() const; ///< Get the raw logic time scale fps with the fraction the viewer set.
 	void enableLogicTimeScale( Bool enable ); ///< Enable or disable the logic time scale setup. If disabled, the simulation time scale is bound to the render frame time or network update time.
 	Bool isLogicTimeScaleEnabled() const; ///< Check whether the logic time scale setup is enabled.
 	Int  getActualLogicTimeScaleFps(LogicTimeQueryFlags flags = 0) const; ///< Get the real logic time scale fps, depending on the max render fps, network state and enabled state.
+	Real getActualLogicTimeScaleFpsReal(LogicTimeQueryFlags flags = 0) const; ///< Same, with the fraction kept - this is what steps the logic accumulator.
 	Real getActualLogicTimeScaleRatio(LogicTimeQueryFlags flags = 0) const; ///< Get the real logic time scale ratio, depending on the max render fps, network state and enabled state.
 	Real getActualLogicTimeScaleOverFpsRatio(LogicTimeQueryFlags flags = 0) const; ///< Get the real logic time scale over render fps ratio, used to scale down steps in render updates to match logic updates.
 	Real getLogicTimeStepSeconds(LogicTimeQueryFlags flags = 0) const; ///< Get the logic time step in seconds
@@ -73,6 +76,7 @@ protected:
 
 	Int m_maxFPS; ///< Maximum frames per second for rendering
 	Int m_logicTimeScaleFPS; ///< Maximum frames per second for logic time scale
+	Real m_logicTimeScaleFPSReal; ///< Same value with its fraction; the accumulator steps at this rate
 
 	Real m_updateTime; ///< Last update delta time in seconds
 

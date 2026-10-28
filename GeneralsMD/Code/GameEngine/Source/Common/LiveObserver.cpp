@@ -134,10 +134,12 @@ LiveObserver::LiveObserver()
 	, m_underrunCount(0)
 	, m_paceSampleCount(0)
 	, m_sourceFps(0)
+	, m_sourceFpsReal(0.0f)
 	, m_paceFps(LOGICFRAMES_PER_SECOND)
+	, m_paceFpsReal((Real)LOGICFRAMES_PER_SECOND)
 	, m_lastPaceApplyMs(0)
-	, m_lastPaceDesired(LOGICFRAMES_PER_SECOND)
-	, m_lastPaceCorrection(0)
+	, m_lastPaceDesired((Real)LOGICFRAMES_PER_SECOND)
+	, m_lastPaceCorrection(0.0f)
 	, m_lastPaceResult("none")
 	, m_lastPaceLogMs(0)
 	, m_lastGateLogRec(0)
@@ -818,11 +820,11 @@ void LiveObserver::updatePlaybackGate(UnsignedInt curFrame)
 			const UnsignedInt hbFrame = m_liveFrameHint.load();
 			const UnsignedInt recFrames = (recFrame > m_lastGateLogRec) ? (recFrame - m_lastGateLogRec) : 0;
 			const UnsignedInt hbFrames = (hbFrame > m_lastGateLogHb) ? (hbFrame - m_lastGateLogHb) : 0;
-			liveObserverLog("GATE: cur=%u (%u/s) edge=%u (%u/s) src=%u host=%u pace=%u rec=%u (%u/s) "
+			liveObserverLog("GATE: cur=%u (%u/s) edge=%u (%u/s) src=%.1f host=%u pace=%.1f rec=%u (%u/s) "
 				"hb=%u (%u/s) gap=%u engage=%u release=%u hold=%d preroll=%d stall=%d underruns=%u safeOff=%d\n",
 				curFrame, playedFrames * 1000 / elapsedMs,
 				liveEdge, sourceFrames * 1000 / elapsedMs,
-				m_sourceFps, m_srcLogicFps.load(), m_paceFps,
+				m_sourceFpsReal, m_srcLogicFps.load(), m_paceFpsReal,
 				recFrame, recFrames * 1000 / elapsedMs,
 				hbFrame, hbFrames * 1000 / elapsedMs,
 				gap, engageBelow, releaseAbove,
@@ -894,7 +896,8 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	{
 		const UnsignedInt spanFrames = (m_paceSamples[m_paceSampleCount - 1].edge > m_paceSamples[0].edge)
 			? (m_paceSamples[m_paceSampleCount - 1].edge - m_paceSamples[0].edge) : 0;
-		m_sourceFps = spanFrames * 1000 / spanMs;
+		m_sourceFpsReal = (Real)spanFrames * 1000.0f / (Real)spanMs;
+		m_sourceFps = (UnsignedInt)(m_sourceFpsReal + 0.5f);
 	}
 
 	// Nominal in every case the controller has no business slowing: before the buffer is built,
@@ -919,13 +922,13 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	// slope read 50 one second and 60 the next. The slope stays the fallback for an older streamer
 	// that does not report one.
 	const UnsignedInt reportedFps = m_srcLogicFps.load();
-	const UnsignedInt rateFps = (reportedFps > 0) ? reportedFps : m_sourceFps;
+	const Real rateFps = (reportedFps > 0) ? (Real)reportedFps : m_sourceFpsReal;
 
 	// Follow the source, plus a correction that repays or spends the difference between the lead
 	// we hold and the lead we want. The correction is what keeps the buffer at its target instead
 	// of wherever the last hiccup left it.
-	const Int error = (Int)gap - (Int)targetLead;
-	Int correction = error / LIVE_PACE_CORRECTION_SECONDS;
+	const Real error = (Real)gap - (Real)targetLead;
+	Real correction = error / (Real)LIVE_PACE_CORRECTION_SECONDS;
 
 	// Playback keeps the host's rate instead of racing it. Being behind does not license a
 	// speed-up: the extra lead is a delay the viewer cannot see, and spending it visibly (a
@@ -933,10 +936,10 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	// that has grown a full release margin past target - there a 1 fps trim is allowed, because
 	// the rate estimate is an integer and otherwise rounding drifts the picture further behind
 	// over a long match, one frame at a time, until the delay is measured in seconds.
-	if (correction > 0)
+	if (correction > 0.0f)
 	{
 		const UnsignedInt trimAbove = targetLead + LIVE_GATE_RELEASE_MARGIN_FRAMES;
-		correction = (gap > trimAbove) ? 1 : 0;
+		correction = (gap > trimAbove) ? 1.0f : 0.0f;
 	}
 
 	// Bound the correction relative to the source, not absolutely. The correction is meant to
@@ -944,23 +947,23 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	// a source rate of 3 it is +267% and playback stops matching the match in any useful sense -
 	// it becomes a slow fast-forward (observed 2026-08-15: L: 3 against P: 11). Spending a
 	// backlog deliberately is what the F8 toggle is for, so the controller stays conservative.
-	Int maxCorrection = (Int)rateFps / 2;
-	if (maxCorrection < LIVE_PACE_MIN_CORRECTION_FPS)
-		maxCorrection = LIVE_PACE_MIN_CORRECTION_FPS;
+	Real maxCorrection = rateFps / 2.0f;
+	if (maxCorrection < (Real)LIVE_PACE_MIN_CORRECTION_FPS)
+		maxCorrection = (Real)LIVE_PACE_MIN_CORRECTION_FPS;
 	if (correction > maxCorrection)
 		correction = maxCorrection;
 	else if (correction < -maxCorrection)
 		correction = -maxCorrection;
 
-	Int desired = (Int)rateFps + correction;
+	Real desired = rateFps + correction;
 
 	// Never above nominal: that would close the distance to the live game, which is the one thing
 	// the broadcast delay promises will not happen. Fast-forward owns catching up, and it already
 	// refuses inside the delay boundary.
-	if (desired > LOGICFRAMES_PER_SECOND)
-		desired = LOGICFRAMES_PER_SECOND;
-	if (desired < LIVE_PACE_MIN_FPS)
-		desired = LIVE_PACE_MIN_FPS;
+	if (desired > (Real)LOGICFRAMES_PER_SECOND)
+		desired = (Real)LOGICFRAMES_PER_SECOND;
+	if (desired < (Real)LIVE_PACE_MIN_FPS)
+		desired = (Real)LIVE_PACE_MIN_FPS;
 
 	m_lastPaceDesired = desired;
 	m_lastPaceCorrection = correction;
@@ -968,18 +971,18 @@ void LiveObserver::updatePlaybackPace(UnsignedInt nowMs, UnsignedInt gap, Unsign
 	logPaceTrace(nowMs, gap, targetLead);
 }
 
-const char* LiveObserver::applyPaceFps(Int paceFps)
+const char* LiveObserver::applyPaceFps(Real paceFps)
 {
 	if (TheFramePacer == nullptr)
 		return "nopacer";
 
 	// Returning to nominal is always allowed through: it is the safe state, and making it wait on
 	// the hysteresis below would leave playback slowed after the reason for slowing had gone.
-	const Bool toNominal = (paceFps >= LOGICFRAMES_PER_SECOND);
+	const Bool toNominal = (paceFps >= (Real)LOGICFRAMES_PER_SECOND);
 	if (!toNominal)
 	{
-		const Int delta = (paceFps > (Int)m_paceFps) ? (paceFps - (Int)m_paceFps) : ((Int)m_paceFps - paceFps);
-		if (delta < LIVE_PACE_MIN_STEP_FPS)
+		const Real delta = (paceFps > m_paceFpsReal) ? (paceFps - m_paceFpsReal) : (m_paceFpsReal - paceFps);
+		if (delta * 1000.0f < (Real)LIVE_PACE_MIN_STEP_MILLI_FPS)
 			return "step";
 		const UnsignedInt nowMs = timeGetTime();
 		if (m_lastPaceApplyMs != 0 && (nowMs - m_lastPaceApplyMs) < (UnsignedInt)LIVE_PACE_MIN_INTERVAL_MS)
@@ -987,7 +990,7 @@ const char* LiveObserver::applyPaceFps(Int paceFps)
 		m_lastPaceApplyMs = nowMs;
 	}
 
-	if (toNominal && m_paceFps == (UnsignedInt)LOGICFRAMES_PER_SECOND)
+	if (toNominal && m_paceFpsReal >= (Real)LOGICFRAMES_PER_SECOND)
 		return "nominal";   // already there; do not touch the pacer every tick
 
 	// Latch what the pacer looked like before this session touched it, so ending the session can
@@ -1006,11 +1009,12 @@ const char* LiveObserver::applyPaceFps(Int paceFps)
 	// every render frame when the scale is at or above the render cap, so the accumulator that
 	// actually slows playback only engages below it.
 	const Int maxRenderFps = TheFramePacer->getActualFramesPerSecondLimit();
-	TheFramePacer->setLogicTimeScaleFps(paceFps);
-	TheFramePacer->enableLogicTimeScale(paceFps < maxRenderFps);
-	TheFramePacer->setLogicTimeScaleFps(paceFps);
+	TheFramePacer->setLogicTimeScaleFpsReal(paceFps);
+	TheFramePacer->enableLogicTimeScale(paceFps < (Real)maxRenderFps);
+	TheFramePacer->setLogicTimeScaleFpsReal(paceFps);
 
-	m_paceFps = (UnsignedInt)paceFps;
+	m_paceFpsReal = paceFps;
+	m_paceFps = (UnsignedInt)(paceFps + 0.5f);
 	return "applied";
 }
 
@@ -1023,16 +1027,15 @@ void LiveObserver::logPaceTrace(UnsignedInt nowMs, UnsignedInt gap, UnsignedInt 
 	const Real selfFps = (TheFramePacer != nullptr) ? TheFramePacer->getUpdateFps() : 0.0f;
 	const Bool scaleOnFlag = (TheFramePacer != nullptr && TheFramePacer->isLogicTimeScaleEnabled());
 	const Real ratio = scaleOnFlag ? TheFramePacer->getActualLogicTimeScaleRatio() : 1.0f;
-	const Int scaleFps = (TheFramePacer != nullptr) ? TheFramePacer->getLogicTimeScaleFps() : 0;
 	const Int scaleOn = scaleOnFlag ? 1 : 0;
 	const Int maxRender = (TheFramePacer != nullptr) ? TheFramePacer->getActualFramesPerSecondLimit() : 0;
 
-	liveObserverLog("PACE: src=%u host=%u rate=%s target=%u gap=%u err=%d corr=%d desired=%d pace=%u "
-		"result=%s self=%.1f ratio=%.3f scale=%d enabled=%d maxRender=%d matching=%d\n",
-		m_sourceFps, m_srcLogicFps.load(), (m_srcLogicFps.load() > 0) ? "host" : "edge", targetLead, gap,
-		(Int)gap - (Int)targetLead, m_lastPaceCorrection, m_lastPaceDesired, m_paceFps,
-		m_lastPaceResult, selfFps, ratio, scaleFps, scaleOn, maxRender,
-		m_paceMatchingEnabled ? 1 : 0);
+	liveObserverLog("PACE: src=%.2f host=%u rate=%s target=%u gap=%u err=%.1f corr=%.2f desired=%.2f "
+		"pace=%.2f result=%s self=%.1f ratio=%.3f scaleR=%.2f enabled=%d maxRender=%d matching=%d\n",
+		m_sourceFpsReal, m_srcLogicFps.load(), (m_srcLogicFps.load() > 0) ? "host" : "edge", targetLead, gap,
+		(Real)gap - (Real)targetLead, m_lastPaceCorrection, m_lastPaceDesired, m_paceFpsReal,
+		m_lastPaceResult, selfFps, ratio, (TheFramePacer != nullptr) ? TheFramePacer->getLogicTimeScaleFpsReal() : 0.0f,
+		scaleOn, maxRender, m_paceMatchingEnabled ? 1 : 0);
 }
 
 void LiveObserver::restorePlaybackPace()
@@ -1045,6 +1048,7 @@ void LiveObserver::restorePlaybackPace()
 	TheFramePacer->setLogicTimeScaleFps(m_savedLogicScaleFps);
 	m_pacerTouched = FALSE;
 	m_paceFps = LOGICFRAMES_PER_SECOND;
+	m_paceFpsReal = (Real)LOGICFRAMES_PER_SECOND;
 }
 
 void LiveObserver::noteDesync(UnsignedInt frame)

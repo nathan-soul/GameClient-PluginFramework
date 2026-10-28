@@ -923,9 +923,11 @@ Bool GameEngine::canUpdateNetworkGameLogic()
 /// -----------------------------------------------------------------------------------------------
 Bool GameEngine::canUpdateRegularGameLogic(UnsignedInt logicTimeQueryFlags)
 {
-	const Int logicTimeScaleFps = TheFramePacer->getActualLogicTimeScaleFps(logicTimeQueryFlags);
+	// Fractional on purpose: a viewer's playback holds the host's rate (54.3 fps, not 54), and
+	// rounding here is what made the picture drift against the stream one frame at a time.
+	const Real logicTimeScaleFps = TheFramePacer->getActualLogicTimeScaleFpsReal(logicTimeQueryFlags);
 
-	if (logicTimeScaleFps <= 0)
+	if (logicTimeScaleFps <= 0.0f)
 	{
 		return false;
 	}
@@ -938,7 +940,7 @@ Bool GameEngine::canUpdateRegularGameLogic(UnsignedInt logicTimeQueryFlags)
 	const Bool useFastMode = TheGlobalData->m_TiVOFastMode && TheGameLogic->isInReplayGame();
 #endif
 
-	if (useFastMode || logicTimeScaleFps >= maxRenderFps)
+	if (useFastMode || logicTimeScaleFps >= (Real)maxRenderFps)
 	{
 		// Logic time scale is uncapped or larger equal Render FPS. Update straight away.
 		return true;
