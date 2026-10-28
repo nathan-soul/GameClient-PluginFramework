@@ -1439,7 +1439,7 @@ void WebSocket::Tick()
 											// Direct mode mirrors the line to the relay, so a watcher
 											// of a pregame lobby reads the same conversation its
 											// players do. The funnel decides whether this client is
-											// the one to forward it (only the host, once per line)
+											// the one to forward it (only the announcer, once per line)
 											// and never throws, so it cannot cost anybody the chat
 											// line drawn below.
 											GencastForwardLobbyChat(chatData.user_id, chatData.message, chatData.announcement);

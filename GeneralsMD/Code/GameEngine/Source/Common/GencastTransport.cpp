@@ -1169,21 +1169,6 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 }
 
 /*
-**	One lobby chat line, mirrored so a watcher of the pregame lobby reads the same
-**	conversation its players do.
-**
-**	The relay has one entry per lobby and binds its announcer, so only the host's client
-**	forwards: it is the client with the lobby's live transcript, and a member posting the
-**	same line would put it on the entry a second time. GO's system lines are skipped as
-**	well - they are the server talking, not a player, and the relay's player-chat channel
-**	is only for people.
-**
-**	The speaker's name is resolved from the roster here rather than at the call site: GO
-**	sends the id and formats the text as "[Name] text", and the relay renders from + text,
-**	so the name comes off the body once it is known. The bracket is the fallback for a
-**	speaker who is not a member, which is how a pre-game observer's line arrives.
-*/
-/*
 **	A lobby line this client typed itself, posted to the relay as a player line.
 **
 **	Direct mode used to learn lobby chat only from GO's echo of a line, and only the lobby *host*
@@ -1218,6 +1203,28 @@ void GencastPostOwnLobbyChat(const std::string& message)
 	transport->ForwardLobbyChat(identity.displayName, message);
 }
 
+/*
+**	One lobby chat line, mirrored so a watcher of the pregame lobby reads the same
+**	conversation its players do.
+**
+**	The relay has one entry per lobby and binds its announcer, so the announcer's client is
+**	the one that forwards: it is the client that speaks for the lobby and holds the members'
+**	transcript. The host is not the test - the streamer is often not the host, and while this
+**	asked for the host, a lobby whose streamer was an ordinary member published no chat at
+**	all. Services mode never gets past the announcer test, which resolves a direct lobby
+**	identity; GO carries the chat for its observers there. GO's system lines are skipped as
+**	well - they are the server talking, not a player, and the relay's player-chat channel is
+**	only for people.
+**
+**	A line this client typed was posted the moment it was typed (GencastPostOwnLobbyChat), so
+**	the echo of the local user's own line is dropped by user id rather than published twice.
+**	That skip is the only dedupe there is: /direct/chat appends every request it accepts.
+**
+**	The speaker's name is resolved from the roster here rather than at the call site: GO
+**	sends the id and formats the text as "[Name] text", and the relay renders from + text,
+**	so the name comes off the body once it is known. The bracket is the fallback for a
+**	speaker who is not a member, which is how a pre-game observer's line arrives.
+*/
 void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, bool isAnnouncement)
 {
 	if (isAnnouncement)
@@ -1245,7 +1252,11 @@ void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, boo
 	NGMP_OnlineServices_LobbyInterface* lobbyInterface =
 		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
 
-	if (lobbyInterface == nullptr || !lobbyInterface->IsHost())
+	// The announcer, not the host. Asking for the host left every watcher of a streamer who was
+	// an ordinary member with a silent lobby, which is the ordinary shape of a two machine
+	// stream. Services mode answers false here by construction - the test resolves a direct
+	// lobby identity - so this function stays the no-op it has always been in that mode.
+	if (lobbyInterface == nullptr || !GencastIsCurrentLobbyAnnouncer())
 	{
 		return;
 	}

@@ -472,17 +472,19 @@ void GencastPostWatcherChat(const AsciiString& lobbyId, const AsciiString& text)
 **	Mirror one lobby chat line to the relay, when direct mode has an entry to attach it to.
 **
 **	Called from the LOBBY_CHAT_FROM_SERVER case, which every client in the lobby runs once
-**	per line. Only the host forwards: the relay keeps one announcer per entry, and the other
-**	members would post the same line again. isAnnouncement marks GO's system lines ("Observers
-**	watching: ...", the countdown ticks), which are not player chat and are left out.
+**	per line. Only the announcer forwards: it is the client that speaks for the lobby, and the
+**	other members would post the same line again - the local player's own line did exactly that
+**	when it was typed, so the echo of it is dropped by user id. isAnnouncement marks GO's system
+**	lines ("Observers watching: ...", the countdown ticks), which are not player chat and are
+**	left out.
 **
-**	The speaker is resolved here rather than at the call site: GO puts the name in user_id and
-**	formats the message as "[Name] text", and the relay names the line from `from`, so the body
-**	it receives must not carry the name twice.
+**	The speaker is resolved here rather than at the call site: GO sends the speaker's id in
+**	user_id and formats the message as "[Name] text", and the relay names the line from `from`,
+**	so the body it receives must not carry the name twice.
 **
-**	No-op outside direct mode, when this client is not the lobby's host, and when nothing is
-**	left to say after the name comes off. Failures are logged, never reported: nobody waits on
-**	a chat forward.
+**	No-op outside direct mode, when this client is not the lobby's announcer, and when nothing
+**	is left to say after the name comes off. Failures are logged, never reported: nobody waits
+**	on a chat forward.
 */
 void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, bool isAnnouncement);
 

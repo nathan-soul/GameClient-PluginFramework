@@ -1268,8 +1268,8 @@ class RelayGencastTransport : public GencastTransport
 
 		/// One line of lobby chat, mirrored to the relay's pregame feed.
 		///
-		/// The host's client is the only one with a lobby's live chat, and it is the client the
-		/// relay binds the entry to, so this is how a watcher reads the conversation. The body is
+		/// The announcer's client is the one that speaks for the lobby and the client the relay
+		/// binds the entry to, so this is how a watcher reads the conversation. The body is
 		/// built here, on the caller's thread (the websocket tick, which is the game thread), and
 		/// only the finished request goes to a worker - same contract as the announce, and for the
 		/// same reason: Perform() is synchronous with a five second timeout.
