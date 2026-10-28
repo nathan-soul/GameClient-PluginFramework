@@ -241,6 +241,38 @@ static GameWindow *checkBoxLimitArmies = NULL;
 
 #if defined(GENERALS_ONLINE)
 
+/// Stream settings belong to whoever speaks for the broadcast. In direct mode that is the
+/// announcer, not necessarily the seat holder: the host may have no relay grant, and the one who
+/// was granted it is the only client whose choices reach the watchers.
+static Bool isStreamHost(NGMP_OnlineServices_LobbyInterface* lobby)
+{
+	if (lobby == nullptr || !lobby->IsInLobby())
+	{
+		return FALSE;
+	}
+
+	if (lobby->IsHost())
+	{
+		return TRUE;
+	}
+
+	return GencastIsCurrentLobbyAnnouncer() ? TRUE : FALSE;
+}
+
+/// The refusal has to name the real reason. In services mode the seat is the qualification, so
+/// the host is the one to appeal to; in direct mode the relay grant is, and sending a streamer
+/// after a seat they were never required to hold would be a false answer.
+static UnicodeString streamCommandRefusal(const WideChar* servicesRefusal,
+	const WideChar* directRefusal)
+{
+	if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
+	{
+		return UnicodeString(directRefusal);
+	}
+
+	return UnicodeString(servicesRefusal);
+}
+
 /// Validate and store a broadcast delay. Rejects rather than clamps: silently turning "6000"
 /// into 600 would leave the streamer believing they had a 100-minute buffer. The server copy
 /// is host-only (UpdateCurrentLobby_StreamDelay checks the role on its own).
@@ -3821,11 +3853,11 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"Streaming is not enabled for this account on this game - the relay admin can turn it on."), helpColor, -1, -1);
 		}
 
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/delay <seconds> - Sets how far behind live observers are held (host only)."), helpColor, -1, -1);
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observers - Announces who is watching this lobby (host only)."), helpColor, -1, -1);
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observerchat <on|off> - Lets pre-game observers send chat into this lobby (host only)."), helpColor, -1, -1);
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/setpassword <password> - Set a lobby password (host only)."), helpColor, -1, -1);
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/removepassword - Remove the lobby password (host only)."), helpColor, -1, -1);
+		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/delay <seconds> - Sets how far behind live observers are held (host or streamer)."), helpColor, -1, -1);
+		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observers - Announces who is watching this lobby (host or streamer)."), helpColor, -1, -1);
+		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observerchat <on|off> - Lets pre-game observers send chat into this lobby (host or streamer)."), helpColor, -1, -1);
+		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/setpassword <password> - Set a lobby password (host or streamer)."), helpColor, -1, -1);
+		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/removepassword - Remove the lobby password (host or streamer)."), helpColor, -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/maxcameraheight <value> - Set the camera height limit (host only)."), helpColor, -1, -1);
 		// GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/leave - Return to the main lobby."), helpColor, -1, -1);
 		// GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/quit - Exit the game."), helpColor, -1, -1);
@@ -3959,7 +3991,7 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 			{
 				if (pLobbyInterface->IsInLobby())
 				{
-					if (pLobbyInterface->IsHost())
+					if (isStreamHost(pLobbyInterface))
 					{
 						UnicodeString val = UnicodeString(uText.str() + 14); // skip the command
 
@@ -3983,7 +4015,9 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 					}
 					else
 					{
-						GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"You must be the lobby host to toggle observer chat."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
+						GadgetListBoxAddEntryText(listboxGameSetupChat, streamCommandRefusal(
+							L"You must be the lobby host to toggle observer chat.",
+							L"Only the streamer of this lobby can toggle observer chat."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 						return TRUE; // was a slash command
 					}
 				}
@@ -4003,7 +4037,7 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 			{
 				if (pLobbyInterface->IsInLobby())
 				{
-					if (pLobbyInterface->IsHost())
+					if (isStreamHost(pLobbyInterface))
 					{
 						UnicodeString val = UnicodeString(uText.str() + 7); // skip the command
 
@@ -4046,7 +4080,9 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 					}
 					else
 					{
-						GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"You must be the lobby host to set the broadcast delay."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
+						GadgetListBoxAddEntryText(listboxGameSetupChat, streamCommandRefusal(
+							L"You must be the lobby host to set the broadcast delay.",
+							L"Only the streamer of this lobby can set the broadcast delay."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 					}
 				}
 			}
@@ -4065,7 +4101,7 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 			{
 				if (pLobbyInterface->IsInLobby())
 				{
-					if (pLobbyInterface->IsHost())
+					if (isStreamHost(pLobbyInterface))
 					{
 						// GO announces the observer roster into the lobby chat; every player
 						// sees it, the host included.
@@ -4073,7 +4109,9 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 					}
 					else
 					{
-						GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"You must be the lobby host to list observers."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
+						GadgetListBoxAddEntryText(listboxGameSetupChat, streamCommandRefusal(
+							L"You must be the lobby host to list observers.",
+							L"Only the streamer of this lobby can list observers."), GameSpyColor[GSCOLOR_CHAT_NORMAL], -1, -1);
 					}
 				}
 			}
@@ -4172,13 +4210,10 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		UnicodeString newPassword(uText.str() + 13); // skip the /setpassword and space
 
 		NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
-		NGMP_OnlineServices_AuthInterface* pAuthInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
-		if (pLobbyInterface != nullptr && pAuthInterface != nullptr)
+		if (pLobbyInterface != nullptr)
 		{
-			LobbyEntry& theLobby = pLobbyInterface->GetCurrentLobby();
-
 			// This is just done clientside to show an error message, server validates it also
-			if (theLobby.owner == pAuthInterface->GetUserID())
+			if (isStreamHost(pLobbyInterface))
 			{
 				if (newPassword.getLength() == 0 || newPassword.getLength() > GENERALS_ONLINE_LOBBY_MAX_PASSWORD_LENGTH)
 				{
@@ -4199,7 +4234,9 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 			}
 			else
 			{
-				GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"Lobby password: Only the host can change it."), GameMakeColor(255, 0, 0, 255), -1, -1);
+				GadgetListBoxAddEntryText(listboxGameSetupChat, streamCommandRefusal(
+					L"Lobby password: Only the host can change it.",
+					L"Lobby password: Only the streamer of this lobby can change it."), GameMakeColor(255, 0, 0, 255), -1, -1);
 			}
 		}
 
@@ -4208,13 +4245,12 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 	else if (token == "removepassword" || token == "clearpassword" || token == "resetpassword")
 	{
 		NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
-		NGMP_OnlineServices_AuthInterface* pAuthInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
-		if (pLobbyInterface != nullptr && pAuthInterface != nullptr)
+		if (pLobbyInterface != nullptr)
 		{
 			LobbyEntry& theLobby = pLobbyInterface->GetCurrentLobby();
 
 			// This is just done clientside to show an error message, server validates it also
-			if (theLobby.owner == pAuthInterface->GetUserID())
+			if (isStreamHost(pLobbyInterface))
 			{
 				if (theLobby.passworded)
 				{
@@ -4233,7 +4269,9 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 			}
 			else
 			{
-				GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"Lobby password: Only the host can change it."), GameMakeColor(255, 0, 0, 255), -1, -1);
+				GadgetListBoxAddEntryText(listboxGameSetupChat, streamCommandRefusal(
+					L"Lobby password: Only the host can change it.",
+					L"Lobby password: Only the streamer of this lobby can change it."), GameMakeColor(255, 0, 0, 255), -1, -1);
 			}
 		}
 
