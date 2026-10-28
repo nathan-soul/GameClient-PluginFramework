@@ -472,27 +472,34 @@ void GencastPostWatcherChat(const AsciiString& lobbyId, const AsciiString& text)
 **	Mirror one lobby chat line to the relay, when direct mode has an entry to attach it to.
 **
 **	Called from the LOBBY_CHAT_FROM_SERVER case, which every client in the lobby runs once
-**	per line. Only the announcer forwards: it is the client that speaks for the lobby, and the
-**	other members would post the same line again - the local player's own line did exactly that
-**	when it was typed, so the echo of it is dropped by user id. isAnnouncement marks GO's system
-**	lines ("Observers watching: ...", the countdown ticks), which are not player chat and are
-**	left out.
+**	per line. Exactly one client forwards: the one whose own relay right opened the match's
+**	pool. Not "the announcer" as GencastIsCurrentLobbyAnnouncer() answers it - the relay's
+**	may_stream is can_stream || match_enabled, so every streaming-enabled member of an open
+**	match answers true and two of them would each post every line. One speaker per entry: its
+**	own line is the one it posted the moment it was typed (GencastPostOwnLobbyChat), so the echo
+**	of it is dropped by user id, while a member's line has no such post and is forwarded here,
+**	once.
+**
+**	isAnnouncement marks GO's system lines ("Observers watching: ...", the countdown ticks),
+**	which are not player chat and are left out.
 **
 **	The speaker is resolved here rather than at the call site: GO sends the speaker's id in
 **	user_id and formats the message as "[Name] text", and the relay names the line from `from`,
 **	so the body it receives must not carry the name twice.
 **
-**	No-op outside direct mode, when this client is not the lobby's announcer, and when nothing
-**	is left to say after the name comes off. Failures are logged, never reported: nobody waits
-**	on a chat forward.
+**	No-op outside direct mode, when this client does not hold the lobby's own relay right, and
+**	when nothing is left to say after the name comes off. Failures are logged, never reported:
+**	nobody waits on a chat forward.
 */
 void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, bool isAnnouncement);
 
 void GencastNoteLobbyAnnouncement(const std::string& message, bool isAnnouncement);
 void GencastNoteHostCountdownStarted();
 
-/// A lobby line this client typed itself. Whoever types posts: the old path only forwarded the
-/// host's copy of GO's echo, so a lobby whose host was not the streamer published no chat at all.
+/// A lobby line this client typed itself, mirrored to the relay. Only the client holding the
+/// lobby's own relay right posts (see GencastForwardLobbyChat): one speaker per entry. A member's
+/// line reaches the relay once, through that client's forward of GO's echo, and the sender's own
+/// line is drawn locally from that same echo.
 void GencastPostOwnLobbyChat(const std::string& message);
 
 /*
@@ -568,9 +575,14 @@ bool GencastQueryStreamPermissionNow(void);
 /// an explicit yes - including "not asked yet" and "the relay could not be asked".
 bool GencastMayStreamCurrentLobby(void);
 
-/// TRUE when this client is the one that speaks for the lobby: direct mode configured, streaming
-/// switched on, seated in a lobby, and the relay's cached yes for this game. In particular always
-/// FALSE in services mode, by construction.
+/// TRUE when this client may stream the lobby it is in: direct mode configured, streaming switched
+/// on, seated in a lobby, and the relay's cached yes for this game. In particular always FALSE in
+/// services mode, by construction.
+///
+/// It is not a test for "the entry's announcer", and must not be used as one: the relay answers
+/// may_stream = can_stream || match_enabled and match_enabled is sticky for the whole match, so
+/// every streaming-enabled member of a pool that is already open answers true. Chat needs one
+/// speaker and uses the player's own right (can_stream) for that reason.
 ///
 /// The lobby is told who is watching from here, because the watcher list belongs to the session the
 /// relay granted this client - so a client that never got the grant has nothing to say about it.

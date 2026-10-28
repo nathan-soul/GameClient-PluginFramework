@@ -726,26 +726,77 @@ bool GencastQueryStreamPermissionNow(void)
 	return permission.mayStream;
 }
 
+namespace
+{
+	/*
+	**	The relay's cached answer for this exact lobby and match, when one has arrived.
+	**
+	**	Keyed like the cache itself: a right to stream one game says nothing about the next game in
+	**	the same lobby, and an answer for another match is no answer at all. Fail closed - the cached
+	**	value starts false and only ever becomes true from an explicit relay answer for this game.
+	*/
+	bool CachedLobbyStreamPermission(GencastStreamPermission& out)
+	{
+		DirectLobbyIdentity identity;
+
+		if (!ResolveStreamPermissionIdentity(identity))
+		{
+			// Not in a lobby, not signed in, or not direct mode: there is nothing to stream here.
+			return false;
+		}
+
+		std::scoped_lock<std::mutex> lock(s_permissionMutex);
+
+		if (identity.lobbyId != s_permissionLobbyId ||
+			std::to_string(identity.matchId) != s_permissionMatchId)
+		{
+			// No answer about this game yet. Not knowing is not permission.
+			return false;
+		}
+
+		out = s_permission;
+		return true;
+	}
+
+	/*
+	**	Whether this client is the one that speaks for its lobby's relay entry in chat.
+	**
+	**	Deliberately not GencastIsCurrentLobbyAnnouncer(): that is the "may I stream this lobby"
+	**	test, and the relay answers may_stream = can_stream || match_enabled. match_enabled is
+	**	sticky and shared by the whole match, so once one permitted player has announced, every
+	**	other streaming-enabled member of that lobby passes the announcer test too. Two such clients
+	**	would each post every line immediately and each forward every line, and /direct/chat
+	**	appends whatever it is sent with no dedupe. can_stream is this player's own right - the one
+	**	the announce that opened the pool was made under - so it names one speaker for the entry.
+	*/
+	bool IsLobbyChatSpeaker(void)
+	{
+		// GencastIsCurrentLobbyAnnouncer() supplies everything except "the right is mine": direct mode,
+		// the local streaming switch, a seat, a lobby and the relay's yes - so this stays the no-op it
+		// always was in services mode. canStream then narrows that yes from "somebody opened this
+		// match" to "I did".
+		if (!GencastIsCurrentLobbyAnnouncer())
+		{
+			return false;
+		}
+
+		GencastStreamPermission permission;
+
+		return CachedLobbyStreamPermission(permission) && permission.canStream;
+	}
+}
+
 bool GencastMayStreamCurrentLobby(void)
 {
-	DirectLobbyIdentity identity;
+	GencastStreamPermission permission;
 
-	if (!ResolveStreamPermissionIdentity(identity))
+	if (!CachedLobbyStreamPermission(permission))
 	{
-		// Not in a lobby, not signed in, or not direct mode: there is nothing to stream here.
+		// Fail closed: not knowing is not permission.
 		return false;
 	}
 
-	std::scoped_lock<std::mutex> lock(s_permissionMutex);
-
-	if (identity.lobbyId != s_permissionLobbyId ||
-		std::to_string(identity.matchId) != s_permissionMatchId)
-	{
-		// No answer about this game yet. Fail closed: not knowing is not permission.
-		return false;
-	}
-
-	return s_permission.mayStream;
+	return permission.mayStream;
 }
 
 bool GencastIsCurrentLobbyAnnouncer(void)
@@ -1171,15 +1222,31 @@ bool GencastPollLobbyStreamState(const AsciiString& lobbyId, const AsciiString& 
 /*
 **	A lobby line this client typed itself, posted to the relay as a player line.
 **
-**	Direct mode used to learn lobby chat only from GO's echo of a line, and only the lobby *host*
-**	forwarded it. The streamer is very often not the host (a two machine test made that plain:
-**	the streaming client registered with isHost=0), so no client forwarded anything and every
-**	watcher saw a silent lobby with the players chatting in it. Whoever types the line posts it:
-**	one post per line, from the client that knows the text first.
+**	One speaker per entry, and the speaker is the client that holds the lobby's own relay right
+**	(IsLobbyChatSpeaker, not merely GencastIsCurrentLobbyAnnouncer - see there). The relay keeps a
+**	single entry per lobby, and /direct/chat appends every request it accepts without dedupe, so a
+**	second streaming-enabled member that also posted its own line as it was typed put that line in
+**	the entry twice: once from the member, once from the speaker forwarding GO's echo of it. The
+**	speaker is therefore the only client that posts immediately; every other member's line travels
+**	exactly once, through the speaker's forward.
+**
+**	An early return for a member loses nothing. Either another client is the speaker for this
+**	lobby and forwards the line, or nobody holds the entry - in which case there is no entry for
+**	the line to land on and the post would be a request the relay refuses.
+**
+**	Nor does this hide the line locally: the chat window draws the player's own line from GO's
+**	broadcast echo, which every client renders, and this function only mirrors text to the relay.
 */
 void GencastPostOwnLobbyChat(const std::string& message)
 {
 	if (message.empty())
+	{
+		return;
+	}
+
+	// The gate that makes the speaker the one poster. Without it a streaming member posts the line
+	// here and the speaker posts it again from the echo, and the relay accepts both.
+	if (!IsLobbyChatSpeaker())
 	{
 		return;
 	}
@@ -1207,18 +1274,20 @@ void GencastPostOwnLobbyChat(const std::string& message)
 **	One lobby chat line, mirrored so a watcher of the pregame lobby reads the same
 **	conversation its players do.
 **
-**	The relay has one entry per lobby and binds its announcer, so the announcer's client is
-**	the one that forwards: it is the client that speaks for the lobby and holds the members'
-**	transcript. The host is not the test - the streamer is often not the host, and while this
-**	asked for the host, a lobby whose streamer was an ordinary member published no chat at
-**	all. Services mode never gets past the announcer test, which resolves a direct lobby
+**	The relay has one entry per lobby, so exactly one client forwards for it: the one that holds
+**	the lobby's own relay right (IsLobbyChatSpeaker). That client speaks for the entry and holds
+**	the members' transcript. The host is not the test - the streamer is often not the host, and
+**	while this asked for the host, a lobby whose streamer was an ordinary member published no
+**	chat at all. Services mode never gets past the speaker test, which resolves a direct lobby
 **	identity; GO carries the chat for its observers there. GO's system lines are skipped as
 **	well - they are the server talking, not a player, and the relay's player-chat channel is
 **	only for people.
 **
-**	A line this client typed was posted the moment it was typed (GencastPostOwnLobbyChat), so
-**	the echo of the local user's own line is dropped by user id rather than published twice.
-**	That skip is the only dedupe there is: /direct/chat appends every request it accepts.
+**	One speaker per entry, and it is that client: it forwards every line that is not its own,
+**	and its own line is the one it posted the moment it was typed (GencastPostOwnLobbyChat). The
+**	echo of that line is therefore dropped by user id rather than published twice. No member
+**	posts its own line, so a member's line arrives at the relay exactly once, from here. That
+**	skip is the only dedupe there is: /direct/chat appends every request it accepts.
 **
 **	The speaker's name is resolved from the roster here rather than at the call site: GO
 **	sends the id and formats the text as "[Name] text", and the relay renders from + text,
@@ -1232,8 +1301,9 @@ void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, boo
 		return;
 	}
 
-	// Our own line was posted the moment it was typed (GencastPostOwnLobbyChat); GO's echo of it
-	// must not post it a second time.
+	// The speaker's own line was posted the moment it was typed (GencastPostOwnLobbyChat), so
+	// GO's echo of it must not post it a second time. Members have no such post of their own -
+	// their line reaches the relay here and only here.
 	{
 		NGMP_OnlineServices_LobbyInterface* ownLobby =
 			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
@@ -1252,11 +1322,13 @@ void GencastForwardLobbyChat(int64_t fromUserId, const std::string& message, boo
 	NGMP_OnlineServices_LobbyInterface* lobbyInterface =
 		NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
 
-	// The announcer, not the host. Asking for the host left every watcher of a streamer who was
-	// an ordinary member with a silent lobby, which is the ordinary shape of a two machine
-	// stream. Services mode answers false here by construction - the test resolves a direct
-	// lobby identity - so this function stays the no-op it has always been in that mode.
-	if (lobbyInterface == nullptr || !GencastIsCurrentLobbyAnnouncer())
+	// One speaker per entry, and it is the client that holds the lobby's own relay right: see
+	// IsLobbyChatSpeaker() for why the announcer test alone is not enough - the relay hands may_stream
+	// to every member of an open match, so two streaming-enabled members would each forward every
+	// line. The host is not the test either: asking for it left every watcher of a streamer who was
+	// an ordinary member with a silent lobby. Services mode answers false here by construction, so
+	// this stays the no-op it has always been in that mode.
+	if (lobbyInterface == nullptr || !IsLobbyChatSpeaker())
 	{
 		return;
 	}

@@ -710,9 +710,11 @@ void NGMP_OnlineServices_LobbyInterface::UpdateCurrentLobby_ForceReady()
 void NGMP_OnlineServices_LobbyInterface::SendChatMessageToCurrentLobby(UnicodeString& strChatMsgUnicode, bool bIsAction)
 {
 #if defined(GENERALS_ONLINE)
-	// Direct mode: the line a player types goes to the relay from the player's own client, the
-	// moment it is typed. Relying on the host to mirror GO's echo left every watcher of a
-	// streamer-who-is-not-the-host with a silent lobby.
+	// Direct mode mirrors the line to the relay from the one client that holds the lobby's own
+	// relay right: only that client posts, so a member's line lands in the relay entry exactly
+	// once - through that client's forward of GO's echo. This call is a no-op for everyone else.
+	// Relying on the host alone left every watcher of a streamer-who-is-not-the-host with a
+	// silent lobby.
 	if (!bIsAction)
 	{
 		GencastPostOwnLobbyChat(to_utf8(strChatMsgUnicode.str()));
