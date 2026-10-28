@@ -813,9 +813,6 @@ void LiveStreamer::notifyWatchers(Int count, const std::string& who, Bool isJoin
 
 void LiveStreamer::pumpWatcherNotice()
 {
-	if (!TheInGameUI)
-		return;
-
 	WatcherNotice notice;
 	{
 		std::lock_guard<std::mutex> lock(m_watcherNoticeMutex);
@@ -834,7 +831,14 @@ void LiveStreamer::pumpWatcherNotice()
 	// lobby at all, which is the opposite of what the announcement is for. No name means nothing
 	// to announce: a count-only snapshot, or bytes that are not a name. Not the announcer means no
 	// session of our own to report on, so the line would be a claim about somebody else's stream.
-	if (!whoWide.isEmpty() && GencastIsCurrentLobbyAnnouncer())
+	//
+	// It also sits above the HUD guard below: speaking to the lobby is not a HUD operation, and a
+	// client that is connected but has no in-game UI yet still owes the lobby its line.
+	//
+	// The announcer predicate is asked alongside isStreaming(), because it answers "may stream
+	// this lobby", not "is streaming now": a demoted backup keeps receiving notices and must not
+	// speak for a stream it no longer runs.
+	if (!whoWide.isEmpty() && isStreaming() && GencastIsCurrentLobbyAnnouncer())
 	{
 		NGMP_OnlineServices_LobbyInterface* lobbyInterface =
 			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
@@ -850,6 +854,10 @@ void LiveStreamer::pumpWatcherNotice()
 			lobbyInterface->SendChatMessageToCurrentLobby(announcement, false);
 		}
 	}
+
+	// Everything past here draws on the HUD, which only exists once a match has loaded.
+	if (!TheInGameUI)
+		return;
 
 	// At most one toast per two seconds, so a lobby filling up does not bury the chat under one
 	// line per watcher. A throttled notice is dropped rather than held: a count delayed by two

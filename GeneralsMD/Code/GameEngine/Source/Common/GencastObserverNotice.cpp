@@ -362,6 +362,60 @@ namespace {
 		}
 	};
 
+	// A name is formatted into a line of lobby chat and a toast, so it must not be able to end that
+	// line or run away with it. C0 controls and DEL go first: a newline, carriage return, tab or
+	// other escape the relay decodes into one would render as a second chat line.
+	// The remainder is cut at 64 bytes, on a code-point boundary: a name is free text and a
+	// four-byte emoji straddling the cut would otherwise leave invalid UTF-8 for the HUD.
+	void sanitizeName(std::string& name)
+	{
+		const size_t maxBytes = 64;
+		std::string clean;
+		clean.reserve(name.size() < maxBytes ? name.size() : maxBytes);
+
+		for (size_t i = 0; i < name.size() && clean.size() < maxBytes;)
+		{
+			const unsigned char lead = (unsigned char)name[i];
+			size_t length = 1;
+
+			if (lead >= 0xF0)
+			{
+				length = 4;
+			}
+			else if (lead >= 0xE0)
+			{
+				length = 3;
+			}
+			else if (lead >= 0xC0)
+			{
+				length = 2;
+			}
+
+			// A sequence the string ends in the middle of is not a character; dropping it leaves
+			// valid UTF-8 behind, where keeping it would leave a fragment of one.
+			if (i + length > name.size())
+			{
+				break;
+			}
+
+			const bool control = (lead < 0x80 && (lead < 0x20 || lead == 0x7F));
+
+			if (!control)
+			{
+				if (clean.size() + length > maxBytes)
+				{
+					break;
+				}
+
+				clean.append(name, i, length);
+			}
+
+			i += length;
+		}
+
+		name.swap(clean);
+	}
+
 	// Reads a whole frame into locals: nothing the caller passes in is written until every field is in.
 	bool readFrame(const char* json, int& count, std::string& who, bool& isJoin)
 	{
@@ -426,6 +480,10 @@ namespace {
 				}
 				else
 				{
+					// Cleaned where the name is decoded, so no caller can put an unsanitised one in
+					// front of players - and so the code that guarantees it stays engine-free and
+					// covered by tools/observer_notice_test.sh.
+					sanitizeName(parsedWho);
 					parsedIsJoin = (key == "joined");
 					haveName = true;
 				}

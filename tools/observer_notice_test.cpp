@@ -180,6 +180,44 @@ int main()
 		}
 	}
 
+	// A name that tries to break the line it lands in: the relay's \n escape decodes to a real
+	// newline, and a 200-byte name would otherwise be formatted whole into lobby chat. The control
+	// character must be gone and the text must fit the cap - and the cap must fall on a character
+	// boundary, or an emoji that straddles it would leave the HUD invalid UTF-8.
+	{
+		++cases;
+
+		const int before = g_failed;
+		const std::string huge(200, 'A');
+		const std::string frame = "{\"count\":5,\"joined\":\"Dennis\\n" + huge + "\",\"left\":null}";
+
+		int count = -1;
+		std::string who;
+		bool isJoin = false;
+
+		expect(GencastParseObserverNotice(frame.c_str(), count, who, isJoin),
+		       "a newline and a 200-byte name still parse");
+		expect(count == 5, "a hostile name leaves the count alone");
+		expect(who.find('\n') == std::string::npos, "the newline is stripped from the name");
+		expect(who.size() <= 64, "the name is capped at 64 bytes");
+		expect(who == "Dennis" + std::string(58, 'A'), "the cap keeps the start of the name");
+
+		// 62 bytes plus a four-byte emoji: the emoji does not fit, and half of it would be worse
+		// than none of it.
+		const std::string emoji = "\xF0\x9F\x98\x80";
+		const std::string boundaryFrame =
+			"{\"count\":1,\"joined\":\"" + std::string(62, 'A') + emoji + "\",\"left\":null}";
+
+		expect(GencastParseObserverNotice(boundaryFrame.c_str(), count, who, isJoin),
+		       "a name with an emoji at the cap parses");
+		expect(who == std::string(62, 'A'), "the cap does not cut an emoji in half");
+
+		if (g_failed != before)
+		{
+			++casesFailed;
+		}
+	}
+
 	if (casesFailed == 0)
 	{
 		std::printf("PASS: %d cases\n", cases);
