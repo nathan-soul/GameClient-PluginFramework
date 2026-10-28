@@ -153,9 +153,9 @@ public:
 	/// logic frame while recording a live-streamed game.
 	void pumpSpectatorChat();
 
-	/// Turn the relay's watcher notice into a HUD toast. Same cadence and thread as
-	/// pumpSpectatorChat: the notice is parsed on the network thread, which must never touch
-	/// TheInGameUI itself.
+	/// Turn the relay's watcher notice into a HUD toast, and into a lobby line when this client is
+	/// the announcer. Same cadence and thread as pumpSpectatorChat: the notice is parsed on the
+	/// network thread, which must never touch TheInGameUI itself.
 	void pumpWatcherNotice();
 
 	/// Publish this client's logic frame rate and ping (MSG_STATS), so an observer can show the
@@ -173,8 +173,9 @@ public:
 private:
 	void networkThreadFunc();
 
-	/// Park a parsed watcher notice for the game thread to toast. Network thread only; the other
-	/// half is pumpWatcherNotice, because a HUD call from this thread would race the renderer.
+	/// Park a parsed watcher notice for the game thread to toast and announce. Network thread only;
+	/// the other half is pumpWatcherNotice, because a HUD or lobby call made from here would race
+	/// the renderer and the lobby socket.
 	void notifyWatchers(Int count, const std::string& who, Bool isJoin);
 
 	/// Ask GO to register this livestream and mint our single-use stream token, returning the
@@ -286,8 +287,9 @@ private:
 	Bool m_hasPendingWatcherNotice;
 	mutable std::mutex m_watcherNoticeMutex;
 
-	// One toast per two seconds; a trickle of watchers would otherwise bury the chat. 0 = none
-	// yet, and game thread only.
+	// One toast per two seconds; a trickle of watchers would otherwise bury the chat. A notice with
+	// count 0 is exempt - it is the one that ends the session. The stamp is game thread only, and 0
+	// means nothing has been toasted yet.
 	enum { LIVE_WATCHER_TOAST_MS = 2000 };
 	UnsignedInt m_lastWatcherToastMs;
 

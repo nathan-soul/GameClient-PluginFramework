@@ -744,6 +744,24 @@ bool GencastMayStreamCurrentLobby(void)
 	return s_permission.mayStream;
 }
 
+bool GencastIsCurrentLobbyAnnouncer(void)
+{
+	DirectLobbyIdentity identity;
+
+	// ResolveDirectLobbyIdentity is the seat check, reused rather than restated: it already demands
+	// direct mode with a URL, the local streaming switch, a lobby, a signed-in account and a wire
+	// slot. All of those are part of "this client speaks for the lobby", and a second, looser copy
+	// of the test would drift from it.
+	if (!ResolveDirectLobbyIdentity(identity))
+	{
+		return false;
+	}
+
+	// The relay's cached yes for this exact game. Without it there is no session to report on, and
+	// services mode never gets here because DirectModeConfigured() is false there.
+	return GencastMayStreamCurrentLobby();
+}
+
 std::string GencastStreamPermissionReason(void)
 {
 	DirectLobbyIdentity identity;

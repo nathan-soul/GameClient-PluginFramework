@@ -4,7 +4,7 @@
 //
 // The frames the relay actually sends: someone joins, someone leaves, and a snapshot with no
 // names at all (the client asked and nobody moved). The rest are frames we must not trust: an
-// empty object, a name that spells a field name, and a string that never closes.
+// empty object, a name that spells a field name, a string that never closes, and a negative count.
 #include "Common/GencastObserverNotice.h"
 
 #include <cstdio>
@@ -150,6 +150,29 @@ int main()
 		expect(count == 7, "an unterminated string leaves the count alone");
 		expect(who == "untouched", "an unterminated string leaves the name alone");
 		expect(isJoin, "an unterminated string leaves the direction alone");
+
+		if (g_failed != before)
+		{
+			++casesFailed;
+		}
+	}
+
+	// A negative count: the relay has no state that says -2 watching, so this is a broken frame -
+	// but a readable one. Clamped to zero rather than refused, because the HUD must never print
+	// "-2 watching" and the notice is otherwise harmless.
+	{
+		++cases;
+
+		const int before = g_failed;
+		int count = 7;
+		std::string who = "stale";
+		bool isJoin = true;
+
+		expect(GencastParseObserverNotice("{\"count\":-2,\"joined\":null,\"left\":null}",
+		                                  count, who, isJoin), "a negative count still parses");
+		expect(count == 0, "a negative count is clamped to zero");
+		expect(who.empty(), "a negative count names nobody");
+		expect(!isJoin, "a negative count is not a join");
 
 		if (g_failed != before)
 		{

@@ -8,5 +8,7 @@
 // why the signature uses plain int and bool instead of Int and Bool - the caller converts.
 //
 // Returns false on a frame it cannot read, and then count/who/isJoin are left untouched. On success,
-// who is empty for a count-only snapshot and isJoin is only meaningful when who is non-empty.
+// who is empty for a count-only snapshot and isJoin is only meaningful when who is non-empty. count
+// is never negative: a malformed frame that says so is clamped to 0 rather than refused, because a
+// count nobody can act on is still less wrong than "-2 watching".
 bool GencastParseObserverNotice(const char* json, int& count, std::string& who, bool& isJoin);

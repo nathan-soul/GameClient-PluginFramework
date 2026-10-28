@@ -561,6 +561,16 @@ bool GencastQueryStreamPermissionNow(void);
 /// an explicit yes - including "not asked yet" and "the relay could not be asked".
 bool GencastMayStreamCurrentLobby(void);
 
+/// TRUE when this client is the one that speaks for the lobby: direct mode configured, streaming
+/// switched on, seated in a lobby, and the relay's cached yes for this game. In particular always
+/// FALSE in services mode, by construction.
+///
+/// The lobby is told who is watching from here, because the watcher list belongs to the session the
+/// relay granted this client - so a client that never got the grant has nothing to say about it.
+/// Returns false from the same seat check ResolveDirectLobbyIdentity makes, rather than repeating
+/// it: "seated in this lobby" has to mean one thing.
+bool GencastIsCurrentLobbyAnnouncer(void);
+
 /// Why: "player_enabled", "match_enabled" or "denied" when the relay answered, "" when it did
 /// not. For wording, never for a decision.
 std::string GencastStreamPermissionReason(void);

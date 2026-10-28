@@ -397,6 +397,17 @@ void LiveStreamer::close()
 	m_isStreaming.store(false);
 	m_isBackup.store(false);
 
+	// A notice parked for the next pump belongs to the stream that just ended: pumped after close()
+	// it would toast the last watcher of a finished session over whatever is on screen next, and a
+	// stale stamp would throttle the new stream's first notice. The network thread is joined above,
+	// so nothing can park another one behind this.
+	{
+		std::lock_guard<std::mutex> lock(m_watcherNoticeMutex);
+		m_hasPendingWatcherNotice = false;
+		m_pendingWatcherNotice = WatcherNotice();
+	}
+	m_lastWatcherToastMs = 0;
+
 	// Release the body buffer (the streaming/backup accumulation).
 	std::lock_guard<std::mutex> lock(m_sendMutex);
 	m_bodyBuffer.clear();
@@ -814,17 +825,44 @@ void LiveStreamer::pumpWatcherNotice()
 		m_hasPendingWatcherNotice = false;
 	}
 
+	// Decoded from UTF-8 rather than passed to %hs, which reads the bytes in the ANSI code page
+	// and turns a non-Latin nickname into noise. Both lines below need it, so it is decoded once.
+	const UnicodeString whoWide = utf8ToWide(notice.who);
+
+	// The lobby is told before the toast throttle can drop the notice. That throttle exists to keep
+	// the HUD readable, but a name it swallowed would never be announced to the players in the
+	// lobby at all, which is the opposite of what the announcement is for. No name means nothing
+	// to announce: a count-only snapshot, or bytes that are not a name. Not the announcer means no
+	// session of our own to report on, so the line would be a claim about somebody else's stream.
+	if (!whoWide.isEmpty() && GencastIsCurrentLobbyAnnouncer())
+	{
+		NGMP_OnlineServices_LobbyInterface* lobbyInterface =
+			NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
+
+		if (lobbyInterface != nullptr)
+		{
+			// An ordinary line rather than an action, so GO prefixes it with this player's name:
+			// the notice is said by the streamer's client, not by the watcher it names.
+			UnicodeString announcement;
+			announcement.format(L"[GenCast] %ls %ls as observer", whoWide.str(),
+				notice.isJoin ? L"joined" : L"left");
+
+			lobbyInterface->SendChatMessageToCurrentLobby(announcement, false);
+		}
+	}
+
 	// At most one toast per two seconds, so a lobby filling up does not bury the chat under one
 	// line per watcher. A throttled notice is dropped rather than held: a count delayed by two
-	// seconds is no longer news.
+	// seconds is no longer news. "Everyone left" is exempt and leaves the stamp alone - it is the
+	// notice that ends a session and must not be swallowed by the burst of leaves before it, nor
+	// swallow the next arrival by pushing the window out.
 	const UnsignedInt now = timeGetTime();
-	if (m_lastWatcherToastMs != 0 && now - m_lastWatcherToastMs < (UnsignedInt)LIVE_WATCHER_TOAST_MS)
-		return;
-	m_lastWatcherToastMs = now;
-
-	// Decoded from UTF-8 rather than passed to %hs, which reads the bytes in the ANSI code page
-	// and turns a non-Latin nickname into noise.
-	const UnicodeString whoWide = utf8ToWide(notice.who);
+	if (notice.count != 0)
+	{
+		if (m_lastWatcherToastMs != 0 && now - m_lastWatcherToastMs < (UnsignedInt)LIVE_WATCHER_TOAST_MS)
+			return;
+		m_lastWatcherToastMs = now;
+	}
 
 	UnicodeString toast;
 	if (!whoWide.isEmpty())

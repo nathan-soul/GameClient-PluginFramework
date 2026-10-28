@@ -264,6 +264,14 @@ namespace {
 
 			out = (int)(negative ? -value : value);
 
+			if (out < 0)
+			{
+				// A watcher count cannot go below zero, so a frame that says one is malformed.
+				// Reported as zero instead of refused: the rest of the frame is still readable,
+				// and "-2 watching" on the HUD is worse than a count that is merely clamped.
+				out = 0;
+			}
+
 			return true;
 		}
 
