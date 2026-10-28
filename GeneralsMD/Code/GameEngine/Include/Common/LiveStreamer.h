@@ -49,6 +49,7 @@ enum LiveMsgType : unsigned char {
 	LIVE_MSG_SPECTATOR_CHAT = 8,  // spectator chat: [nameLen u32][UTF-8 name][textLen u32][UTF-8 text]
 	LIVE_MSG_TICK      = 9,  // frame heartbeat: [frame u32]
 	LIVE_MSG_STATS     = 10, // match telemetry: [logicFps u32][pingMs u32] - see publishStats()
+	LIVE_MSG_OBSERVERS = 11, // watcher notice: [JSON] {"count":N,"joined":NAME|null,"left":NAME|null}
 };
 
 class LiveStreamer;
@@ -152,6 +153,11 @@ public:
 	/// logic frame while recording a live-streamed game.
 	void pumpSpectatorChat();
 
+	/// Turn the relay's watcher notice into a HUD toast. Same cadence and thread as
+	/// pumpSpectatorChat: the notice is parsed on the network thread, which must never touch
+	/// TheInGameUI itself.
+	void pumpWatcherNotice();
+
 	/// Publish this client's logic frame rate and ping (MSG_STATS), so an observer can show the
 	/// same numbers a player in the match sees. Sampled from onTick, which already runs on a fixed
 	/// frame cadence, and sent only when a value actually moves - a ping walking 64 -> 92 is two
@@ -166,6 +172,10 @@ public:
 
 private:
 	void networkThreadFunc();
+
+	/// Park a parsed watcher notice for the game thread to toast. Network thread only; the other
+	/// half is pumpWatcherNotice, because a HUD call from this thread would race the renderer.
+	void notifyWatchers(Int count, const std::string& who, Bool isJoin);
 
 	/// Ask GO to register this livestream and mint our single-use stream token, returning the
 	/// relay URL to connect to. Blocking, so network thread only.
@@ -259,6 +269,27 @@ private:
 	};
 	std::deque<SpectatorChatEntry> m_spectatorChatQueue;
 	mutable std::mutex m_spectatorChatMutex;
+
+	// The same hand-off for the relay's watcher notice: written by the network thread, drained by
+	// pumpWatcherNotice on the game thread. Only the newest one is kept, since the count is
+	// authoritative - a lobby filling up at once then shows the number that is true now instead
+	// of a stack of numbers that were.
+	struct WatcherNotice
+	{
+		WatcherNotice() : count(0), isJoin(FALSE) {}
+
+		Int count;
+		Bool isJoin;
+		std::string who;
+	};
+	WatcherNotice m_pendingWatcherNotice;
+	Bool m_hasPendingWatcherNotice;
+	mutable std::mutex m_watcherNoticeMutex;
+
+	// One toast per two seconds; a trickle of watchers would otherwise bury the chat. 0 = none
+	// yet, and game thread only.
+	enum { LIVE_WATCHER_TOAST_MS = 2000 };
+	UnsignedInt m_lastWatcherToastMs;
 
 	// deque, not queue: on CURLE_AGAIN unsent frames go back at the FRONT, since order is data
 	// and a misordered stream is corrupt.

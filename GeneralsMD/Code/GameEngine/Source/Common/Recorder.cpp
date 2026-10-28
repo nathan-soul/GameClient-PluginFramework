@@ -428,7 +428,10 @@ void RecorderClass::update() {
 		// Drain spectator chat received from the relay into the HUD log.
 #if defined(GENERALS_ONLINE)
 		if (TheLiveStreamer)
+		{
 			TheLiveStreamer->pumpSpectatorChat();
+			TheLiveStreamer->pumpWatcherNotice();
+		}
 #endif
 	}
 	else if (isPlaybackMode()) {

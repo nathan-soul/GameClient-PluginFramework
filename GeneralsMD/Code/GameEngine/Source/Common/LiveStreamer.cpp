@@ -25,6 +25,7 @@
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 #include "Common/LiveStreamer.h"
 #include "Common/GencastTls.h"
+#include "Common/GencastObserverNotice.h"	// parses the relay's watcher notice
 #include "Common/LiveObserver.h"	// LIVE_OBSERVER_LOGGING gate + LIVE_OBSERVER_BUILD_TAG
 #include "Common/GlobalData.h"
 #include "Common/GameCommon.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
@@ -158,6 +159,8 @@ LiveStreamer::LiveStreamer()
 	, m_sentBytes(0)
 	, m_sentFrames(0)
 	, m_endReason("shutdown")
+	, m_hasPendingWatcherNotice(false)
+	, m_lastWatcherToastMs(0)
 {
 	m_headerBuffer.reserve(4096);
 	m_bodyBuffer.reserve(64 * 1024);
@@ -497,6 +500,10 @@ void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
 	}
 	regJson += isObserver ? ",\"is_observer\":true" : ",\"is_observer\":false";
 
+	// What this build can put on screen, so the relay only sends frames that will be read. An
+	// older relay ignores an unknown list, and a newer one can add a capability beside this one.
+	regJson += ",\"caps\":[\"observers\"]";
+
 	// Both host-only. The relay ignores them from anyone else, but not sending them at all from
 	// a non-host keeps the payload honest about who is claiming to describe the game.
 	if (registration.isHost)
@@ -779,6 +786,56 @@ void LiveStreamer::pumpSpectatorChat()
 		line.format(L"[%ls] %ls", entry.displayName.str(), entry.text.str());
 		TheInGameUI->messageColor(true, &spectatorColor, UnicodeString(L"%ls"), line.str());
 	}
+}
+
+void LiveStreamer::notifyWatchers(Int count, const std::string& who, Bool isJoin)
+{
+	// Network thread. The toast is a HUD call that only the game thread may make, so the notice
+	// waits here rather than being shown now. The newest one wins: a count that has already been
+	// replaced is not worth a line of its own.
+	std::lock_guard<std::mutex> lock(m_watcherNoticeMutex);
+	m_pendingWatcherNotice.count = count;
+	m_pendingWatcherNotice.who = who;
+	m_pendingWatcherNotice.isJoin = isJoin;
+	m_hasPendingWatcherNotice = true;
+}
+
+void LiveStreamer::pumpWatcherNotice()
+{
+	if (!TheInGameUI)
+		return;
+
+	WatcherNotice notice;
+	{
+		std::lock_guard<std::mutex> lock(m_watcherNoticeMutex);
+		if (!m_hasPendingWatcherNotice)
+			return;
+		notice = m_pendingWatcherNotice;
+		m_hasPendingWatcherNotice = false;
+	}
+
+	// At most one toast per two seconds, so a lobby filling up does not bury the chat under one
+	// line per watcher. A throttled notice is dropped rather than held: a count delayed by two
+	// seconds is no longer news.
+	const UnsignedInt now = timeGetTime();
+	if (m_lastWatcherToastMs != 0 && now - m_lastWatcherToastMs < (UnsignedInt)LIVE_WATCHER_TOAST_MS)
+		return;
+	m_lastWatcherToastMs = now;
+
+	// Decoded from UTF-8 rather than passed to %hs, which reads the bytes in the ANSI code page
+	// and turns a non-Latin nickname into noise.
+	const UnicodeString whoWide = utf8ToWide(notice.who);
+
+	UnicodeString toast;
+	if (!whoWide.isEmpty())
+		toast.format(L"%ls %ls ( %d watching )", whoWide.str(),
+			notice.isJoin ? L"is watching" : L"stopped watching", (int)notice.count);
+	else
+		toast.format(L"%d watching", (int)notice.count);
+
+	// The name is player text and may contain '%', so it travels as an argument, never as the
+	// format string.
+	TheInGameUI->message(UnicodeString(L"%ls"), toast.str());
 }
 
 void LiveStreamer::queueFrame(LiveMsgType type, const void* data, size_t len)
@@ -1363,6 +1420,29 @@ void LiveStreamer::networkThreadFunc()
 								m_spectatorChatQueue.push_back(entry);
 						}
 					}
+				}
+			}
+			else if (msgType == LIVE_MSG_OBSERVERS && msgLen > 0
+				&& (uint64_t)recvBuf.size() >= 5ull + msgLen)
+			{
+				// A JSON body, unlike the length-prefixed shape spectator chat uses: the count
+				// is the only field acted on and the names are free text, so one parser owns the
+				// whole shape. Copied out because the buffer is not NUL-terminated.
+				const std::string noticeJson(recvBuf.data() + 5, msgLen);
+				int count = 0;
+				std::string who;
+				bool isJoin = false;
+
+				if (GencastParseObserverNotice(noticeJson.c_str(), count, who, isJoin))
+				{
+					liveStreamLog("gencast: watchers=%d %s=%s\n", count, isJoin ? "joined" : "left",
+						who.c_str());
+					notifyWatchers(count, who, isJoin);
+				}
+				else
+				{
+					liveStreamLog("gencast: unreadable watcher notice (%.*s)\n", (int)msgLen,
+						recvBuf.data() + 5);
 				}
 			}
 		}

@@ -35,6 +35,75 @@ namespace {
 			return false;
 		}
 
+		// Four hex digits. One decoder serves both the single escape and the low half of a
+		// surrogate pair, so the two cannot disagree about what counts as a digit.
+		bool readHex4(unsigned& out)
+		{
+			unsigned value = 0;
+
+			for (int i = 0; i < 4; ++i)
+			{
+				if (p >= end)
+				{
+					return false;
+				}
+
+				const char h = *p++;
+				int digit = 0;
+
+				if (h >= '0' && h <= '9')
+				{
+					digit = h - '0';
+				}
+				else if (h >= 'a' && h <= 'f')
+				{
+					digit = h - 'a' + 10;
+				}
+				else if (h >= 'A' && h <= 'F')
+				{
+					digit = h - 'A' + 10;
+				}
+				else
+				{
+					return false;
+				}
+
+				value = value * 16 + (unsigned)digit;
+			}
+
+			out = value;
+
+			return true;
+		}
+
+		// The HUD wants bytes, so a code point becomes UTF-8 here. Anything above the BMP needs
+		// four of them - an emoji nickname is exactly that case.
+		static void appendUtf8(std::string& out, unsigned code)
+		{
+			if (code < 0x80)
+			{
+				out.push_back((char)code);
+			}
+			else if (code < 0x800)
+			{
+				out.push_back((char)(0xC0 | (code >> 6)));
+				out.push_back((char)(0x80 | (code & 0x3F)));
+			}
+			else if (code < 0x10000)
+			{
+				out.push_back((char)(0xE0 | (code >> 12)));
+				out.push_back((char)(0x80 | ((code >> 6) & 0x3F)));
+				out.push_back((char)(0x80 | (code & 0x3F)));
+			}
+			else
+			{
+				out.push_back((char)(0xF0 | (code >> 18)));
+				out.push_back((char)(0x80 | ((code >> 12) & 0x3F)));
+				out.push_back((char)(0x80 | ((code >> 6) & 0x3F)));
+				out.push_back((char)(0x80 | (code & 0x3F)));
+			}
+		}
+
 		// Escapes are resolved because the relay escapes quotes and backslashes, and a raw \" must not
 		// be mistaken for the closing quote.
 		bool readString(std::string& out)
@@ -86,53 +155,44 @@ namespace {
 						// arrives here and must not come out as a question mark.
 						unsigned code = 0;
 
-						for (int i = 0; i < 4; ++i)
+						if (!readHex4(code))
 						{
-							if (p >= end)
+							return false;
+						}
+
+						// A character above the BMP arrives as a UTF-16 surrogate pair. Decoded one
+						// half at a time it becomes two replacement marks, so an emoji nickname
+						// would reach the HUD garbled; the pair is one character and is combined.
+						if (code >= 0xD800 && code <= 0xDBFF)
+						{
+							const char* const afterHigh = p;
+							unsigned low = 0;
+							bool haveLow = false;
+
+							if (end - p >= 6 && p[0] == '\\' && p[1] == 'u')
 							{
-								return false;
+								p += 2;
+								haveLow = readHex4(low);
 							}
 
-							if (*p >= '0' && *p <= '9')
+							if (haveLow && low >= 0xDC00 && low <= 0xDFFF)
 							{
-								code = code * 16 + (unsigned)(*p - '0');
-							}
-							else if (*p >= 'a' && *p <= 'f')
-							{
-								code = code * 16 + (unsigned)(*p - 'a' + 10);
-							}
-							else if (*p >= 'A' && *p <= 'F')
-							{
-								code = code * 16 + (unsigned)(*p - 'A' + 10);
+								code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
 							}
 							else
 							{
-								return false;
+								// Not a pair after all: the high half is unshowable, but whatever
+								// follows it is an ordinary escape that must still be read.
+								code = 0xFFFD;
+								p = afterHigh;
 							}
-
-							++p;
 						}
-
-						if (code >= 0xD800 && code <= 0xDFFF)
+						else if (code >= 0xDC00 && code <= 0xDFFF)
 						{
-							code = 0xFFFD;	// a lone surrogate is not a character we can show
+							code = 0xFFFD;	// a low half with nothing before it
 						}
 
-						if (code < 0x80)
-						{
-							out.push_back((char)code);
-						}
-						else if (code < 0x800)
-						{
-							out.push_back((char)(0xC0 | (code >> 6)));
-							out.push_back((char)(0x80 | (code & 0x3F)));
-						}
-						else
-						{
-							out.push_back((char)(0xE0 | (code >> 12)));
-							out.push_back((char)(0x80 | ((code >> 6) & 0x3F)));
-							out.push_back((char)(0x80 | (code & 0x3F)));
-						}
+						appendUtf8(out, code);
 
 						break;
 					}

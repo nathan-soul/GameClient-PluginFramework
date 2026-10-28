@@ -2,8 +2,9 @@
 //
 //   ./tools/observer_notice_test.sh
 //
-// The four frames the relay actually sends: someone joins, someone leaves, and a snapshot with no
-// names at all (the client asked and nobody moved). The fourth case is a frame we must not trust.
+// The frames the relay actually sends: someone joins, someone leaves, and a snapshot with no
+// names at all (the client asked and nobody moved). The rest are frames we must not trust: an
+// empty object, a name that spells a field name, and a string that never closes.
 #include "Common/GencastObserverNotice.h"
 
 #include <cstdio>
@@ -103,6 +104,52 @@ int main()
 		expect(count == 7, "a rejected frame leaves the count alone");
 		expect(who == "untouched", "a rejected frame leaves the name alone");
 		expect(isJoin, "a rejected frame leaves the direction alone");
+
+		if (g_failed != before)
+		{
+			++casesFailed;
+		}
+	}
+
+	// A name is free text: it may spell the field name, carry quotes, and hold a character above
+	// the BMP that the relay escapes as a surrogate pair. None of that may be mistaken for the
+	// frame's own fields, and the pair must come back as one character.
+	{
+		++cases;
+
+		const int before = g_failed;
+		int count = -1;
+		std::string who;
+		bool isJoin = false;
+
+		expect(GencastParseObserverNotice(
+		           "{\"joined\":\"\\uD83D\\uDE00 \\\"count\\\":99\",\"count\":4,\"left\":null}",
+		           count, who, isJoin), "a name that spells a field parses");
+		expect(count == 4, "the count in the name is not the count");
+		expect(who == "\xF0\x9F\x98\x80 \"count\":99", "the name keeps its text, emoji and all");
+		expect(isJoin, "the join direction survives a hostile name");
+
+		if (g_failed != before)
+		{
+			++casesFailed;
+		}
+	}
+
+	// A quote that never closes: half a frame is not a frame, and the caller must not see the
+	// count that had already been read before the parser gave up.
+	{
+		++cases;
+
+		const int before = g_failed;
+		int count = 7;
+		std::string who = "untouched";
+		bool isJoin = true;
+
+		expect(!GencastParseObserverNotice("{\"count\":5,\"joined\":\"Dennis", count, who, isJoin),
+		       "an unterminated string is rejected");
+		expect(count == 7, "an unterminated string leaves the count alone");
+		expect(who == "untouched", "an unterminated string leaves the name alone");
+		expect(isJoin, "an unterminated string leaves the direction alone");
 
 		if (g_failed != before)
 		{
