@@ -1044,6 +1044,23 @@ Bool LiveObserver::isWithinBroadcastDelay(UnsignedInt curFrame) const
 	return gap <= getTargetLeadFrames() + LIVE_GATE_RELEASE_MARGIN_FRAMES;
 }
 
+void LiveObserver::logStreamEnd(const char* source, const char* detail)
+{
+	// The state at the moment the end was noticed, not after: the game frame says whether this
+	// ended a running match or arrived after it, and connected/playback say whether the watcher
+	// had anything on screen to lose.
+	liveObserverLog("gencast: watcher stream end source=%s%s%s (game_frame=%u live_edge=%u "
+		"connected=%d playback=%d delay_s=%u)\n",
+		source,
+		detail != nullptr ? " detail=" : "",
+		detail != nullptr ? detail : "",
+		TheGameLogic != nullptr ? TheGameLogic->getFrame() : 0u,
+		getLiveEdge(),
+		isConnected() ? 1 : 0,
+		m_playbackStarted.load() ? 1 : 0,
+		getEffectiveDelaySeconds());
+}
+
 Bool LiveObserver::isPlaybackReady() const
 {
 	if (!m_headerReceived.load())
@@ -1201,6 +1218,16 @@ Bool LiveObserverConsumeReturnedFromGame(void)
 void liveObserverEndSession(void)
 {
 	liveObserverLog("liveObserverEndSession: observer=%s\n", TheLiveObserver ? "destroying" : "(none)");
+
+	// The last hop of every end: what the session was when it was closed, and whether a game was
+	// running. A watcher left on an empty map means this ran while isInInteractiveGame() was still
+	// true, or the shell never got its map back.
+	liveObserverLog("gencast: watcher stream end action=end-session (game_running=%d playback=%d "
+		"stream_ended=%d shell_map=%d)\n",
+		(TheGameLogic != nullptr && TheGameLogic->isInInteractiveGame()) ? 1 : 0,
+		(TheLiveObserver != nullptr && TheLiveObserver->hasPlaybackStarted()) ? 1 : 0,
+		(TheLiveObserver != nullptr && TheLiveObserver->isStreamEnded()) ? 1 : 0,
+		(TheWritableGlobalData != nullptr && TheWritableGlobalData->m_shellMapOn) ? 1 : 0);
 
 	if (TheLiveObserver)
 	{
@@ -2005,6 +2032,7 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
 	{
 		liveObserverLog("LiveObserver: END received\n");
 		m_streamEnded.store(true);
+		logStreamEnd("relay-END", nullptr);
 
 		if (m_liveFile)
 		{
@@ -2085,6 +2113,9 @@ void LiveObserver::handleFrame(unsigned char type, const char* payload, size_t l
 				m_chatQueue.push_back(entry);
 			}
 		}
+
+		logStreamEnd("relay-error", reasonName.empty() ? "unknown" : reasonName.c_str());
+
 		m_streamEnded.store(true);
 		break;
 	}
@@ -2210,6 +2241,7 @@ LiveObserver::WsRecvResult LiveObserver::wsRecv(std::vector<char>& outBuffer)
 		// frame). Wind the session down like a connection loss instead of spinning on a
 		// dead socket until the watchdog catches up.
 		liveObserverLog("LiveObserver::wsRecv error: %d - connection lost, winding down the session\n", (int)rc);
+		logStreamEnd("connection-lost", "wsRecv");
 		m_connected.store(false);
 		m_streamEnded.store(true);
 		outBuffer.clear();
@@ -2489,6 +2521,7 @@ void LiveObserver::networkThreadFunc()
 		{
 			liveObserverLog("LiveObserver: no stream data for %ums while the relay is still connected - the host stopped sending, ending the session\n",
 				(unsigned)(timeGetTime() - m_lastMediaMs.load()));
+			logStreamEnd("host-idle", "no-media");
 			m_streamEnded.store(true);
 			break;
 		}
@@ -2498,6 +2531,7 @@ void LiveObserver::networkThreadFunc()
 		{
 			liveObserverLog("LiveObserver: no data from relay for %ums - connection lost, winding down the session\n",
 				(unsigned)(timeGetTime() - m_lastFrameReceivedMs.load()));
+			logStreamEnd("relay-silent", "watchdog");
 			m_streamEnded.store(true);
 			m_connected.store(false);
 			break;

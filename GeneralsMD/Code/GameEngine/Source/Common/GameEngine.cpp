@@ -1052,7 +1052,10 @@ void GameEngine::update()
 				else if (timeGetTime() - s_streamOverSeenMs > 3000)
 				{
 					s_streamOverSeenMs = 0;
-					liveObserverLog("LiveObserver: stream ended mid-match - leaving the observer view\n");
+					liveObserverLog("gencast: watcher stream end action=leave-view (game_frame=%u "
+						"interactive=%d shell_map=%d) - clearing the game and returning to the shell\n",
+						TheGameLogic->getFrame(), TheGameLogic->isInInteractiveGame() ? 1 : 0,
+						TheWritableGlobalData != nullptr && TheWritableGlobalData->m_shellMapOn ? 1 : 0);
 
 					// Say why before the view goes: a watcher whose stream simply stopped had no
 					// way to tell a pause from an end, and the picture it left behind read as a

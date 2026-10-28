@@ -139,6 +139,12 @@ public:
 	/// Close the connection and shut down the background thread.
 	void close();
 
+	/// One line per way the watcher's stream can end, naming the source. Five different exits
+	/// set m_streamEnded (relay END, relay error, dead socket, a host that stopped sending, a
+	/// silent relay), and from the log they used to be indistinguishable from each other and
+	/// from a pause - which is exactly the state a watcher got stuck in.
+	void logStreamEnd(const char* source, const char* detail);
+
 	// ---- Session policy: the broadcast delay and the buffering gate --------------------
 	//
 	// This state belongs to the session rather than the Recorder, so that ending a session is
