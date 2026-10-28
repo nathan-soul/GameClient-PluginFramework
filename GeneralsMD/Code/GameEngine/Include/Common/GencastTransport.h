@@ -366,6 +366,10 @@ public:
 		const std::string& mapName, const std::string& lobbyName = std::string(),
 		int delaySeconds = -1) {}
 
+	// Direct mode: the lobby's delay changed after it was announced. The announce body carries it
+	// and is deduped whole, so the setter re-announces instead of sending a request of its own.
+	virtual void SetStreamDelay(int seconds) {}
+
 	/*
 	**	The relay's lobby lifecycle, from the client's side.
 	**
@@ -407,6 +411,10 @@ GencastTransport* CreateRelayGencastTransport();
 **	announcing, in which phase, and whether anything actually changed - is in one place.
 */
 void GencastAnnounceCurrentLobby();
+
+/// A new broadcast delay for the lobby this client announces. Kept for that lobby, because GO's
+/// own copy is the host's and every later announce would otherwise put the old value back.
+void GencastSetStreamDelay(int seconds);
 
 /// Whether a lobby's stream is known to be live: the lobby observer view's one question, asked
 /// the way the current mode can answer it. Live is final for the caller; false means "not yet",

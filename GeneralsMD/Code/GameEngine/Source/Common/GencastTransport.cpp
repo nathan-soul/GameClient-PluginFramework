@@ -358,6 +358,39 @@ namespace
 		std::lock_guard<std::mutex> lock(s_announcedMatch.mutex);
 		s_announcedMatch.valid = false;
 	}
+
+	// The delay this client was last told to announce, kept per lobby.
+	//
+	// GO's copy belongs to the host, so a streamer without the seat sees it stay at the old value:
+	// without holding the new one here, the next lobby refresh would put the old delay back.
+	struct AnnouncedDelay
+	{
+		std::mutex mutex;
+		std::string lobbyId;
+		int seconds = -1;
+	};
+
+	AnnouncedDelay s_announcedDelay;
+
+	void RememberAnnouncedDelay(const std::string& lobbyId, int seconds)
+	{
+		std::lock_guard<std::mutex> lock(s_announcedDelay.mutex);
+		s_announcedDelay.lobbyId = lobbyId;
+		s_announcedDelay.seconds = seconds;
+	}
+
+	/// The delay an announce for this lobby has to carry: the last one set here, else GO's.
+	int AnnouncedDelaySeconds(const DirectLobbyIdentity& identity)
+	{
+		std::lock_guard<std::mutex> lock(s_announcedDelay.mutex);
+
+		if (identity.lobbyId == s_announcedDelay.lobbyId && s_announcedDelay.seconds >= 0)
+		{
+			return s_announcedDelay.seconds;
+		}
+
+		return identity.delaySeconds;
+	}
 }
 
 bool ResolveDirectLobbyIdentity(DirectLobbyIdentity& out)
@@ -866,12 +899,40 @@ void GencastAnnounceCurrentLobby()
 	}
 
 	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName, mapName,
-		identity.lobbyName, identity.delaySeconds);
+		identity.lobbyName, AnnouncedDelaySeconds(identity));
 	transport->AnnounceLobby(identity.lobbyId, state);
 
 	// The relay now lists this match. Remember which one, so ending the stream does not depend on
 	// the GO lobby still existing at that moment.
 	RememberAnnouncedMatch(identity);
+}
+
+void GencastSetStreamDelay(int seconds)
+{
+	if (seconds < 0)
+	{
+		return;
+	}
+
+	// The seat check, and the mode test with it: outside direct mode there is no announce to
+	// attach a delay to, and GO's own host-only copy is the only one.
+	DirectLobbyIdentity identity;
+
+	if (!ResolveDirectLobbyIdentity(identity))
+	{
+		return;
+	}
+
+	RememberAnnouncedDelay(identity.lobbyId, seconds);
+
+	std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
+
+	if (transport == nullptr)
+	{
+		return;
+	}
+
+	transport->SetStreamDelay(seconds);
 }
 
 /*

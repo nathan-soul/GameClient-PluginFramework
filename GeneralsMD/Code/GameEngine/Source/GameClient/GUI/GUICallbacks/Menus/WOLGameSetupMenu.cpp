@@ -241,9 +241,8 @@ static GameWindow *checkBoxLimitArmies = NULL;
 
 #if defined(GENERALS_ONLINE)
 
-/// Stream settings belong to whoever speaks for the broadcast. In direct mode that is the
-/// announcer, not necessarily the seat holder: the host may have no relay grant, and the one who
-/// was granted it is the only client whose choices reach the watchers.
+/// Stream settings belong to whoever speaks for the broadcast: in direct mode the announcer, who
+/// may not hold the seat. A gate only - GO still refuses /observerchat and /observers for a non-host.
 static Bool isStreamHost(NGMP_OnlineServices_LobbyInterface* lobby)
 {
 	if (lobby == nullptr || !lobby->IsInLobby())
@@ -257,6 +256,22 @@ static Bool isStreamHost(NGMP_OnlineServices_LobbyInterface* lobby)
 	}
 
 	return GencastIsCurrentLobbyAnnouncer() ? TRUE : FALSE;
+}
+
+/// GO answers /observerchat and /observers for the lobby host alone, so a streamer without the seat
+/// would pass the gate above and then watch a silent server refusal.
+static Bool refuseHostOnlyChange(NGMP_OnlineServices_LobbyInterface* lobby, Color color)
+{
+	if (lobby != nullptr && lobby->IsHost())
+	{
+		return FALSE;
+	}
+
+	GadgetListBoxAddEntryText(listboxGameSetupChat,
+		UnicodeString(L"Only the lobby host can change this until the relay supports it."),
+		color, -1, -1);
+
+	return TRUE;
 }
 
 /// The refusal has to name the real reason. In services mode the seat is the qualification, so
@@ -274,8 +289,8 @@ static UnicodeString streamCommandRefusal(const WideChar* servicesRefusal,
 }
 
 /// Validate and store a broadcast delay. Rejects rather than clamps: silently turning "6000"
-/// into 600 would leave the streamer believing they had a 100-minute buffer. The server copy
-/// is host-only (UpdateCurrentLobby_StreamDelay checks the role on its own).
+/// into 600 would leave the streamer believing they had a 100-minute buffer. The GO copy is
+/// host-only; the relay's watch list has its own, and only the announcer can set that one.
 static void applyLiveStreamDelay(Int seconds)
 {
 	if (seconds < 0 || seconds > (Int)LIVE_DELAY_SECONDS_MAX)
@@ -301,6 +316,10 @@ static void applyLiveStreamDelay(Int seconds)
 	{
 		pLobbyInterface->UpdateCurrentLobby_StreamDelay(seconds);
 	}
+
+	// A streamer who is not the host never reaches the GO write above, so this is the only way the
+	// delay reaches the watchers. No-op in services mode, where GO's copy is the only copy.
+	GencastSetStreamDelay(seconds);
 }
 
 /// Each player's own "will this client broadcast" switch, shared with the Recorder at match
@@ -3846,7 +3865,7 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		// block is the only place the switch is visible at all.
 		if (GencastMayStreamCurrentLobby())
 		{
-			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/stream <on|off> - Broadcast this game so others can watch it live (host only)."), helpColor, -1, -1);
+			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/stream <on|off> - Broadcast this game so others can watch it live (any player)."), helpColor, -1, -1);
 		}
 		else if (GencastStreamPermissionReason() == "denied")
 		{
@@ -3856,8 +3875,13 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/delay <seconds> - Sets how far behind live observers are held (host or streamer)."), helpColor, -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observers - Announces who is watching this lobby (host or streamer)."), helpColor, -1, -1);
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observerchat <on|off> - Lets pre-game observers send chat into this lobby (host or streamer)."), helpColor, -1, -1);
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/setpassword <password> - Set a lobby password (host or streamer)."), helpColor, -1, -1);
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/removepassword - Remove the lobby password (host or streamer)."), helpColor, -1, -1);
+		// GO lobby passwords do not exist in direct mode, where both commands are refused, so the
+		// help must not offer them there.
+		if (!NGMP_OnlineServicesManager::Settings.Relay_Direct())
+		{
+			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/setpassword <password> - Set a lobby password (host or streamer)."), helpColor, -1, -1);
+			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/removepassword - Remove the lobby password (host or streamer)."), helpColor, -1, -1);
+		}
 		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/maxcameraheight <value> - Set the camera height limit (host only)."), helpColor, -1, -1);
 		// GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/leave - Return to the main lobby."), helpColor, -1, -1);
 		// GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/quit - Exit the game."), helpColor, -1, -1);
@@ -3993,6 +4017,11 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 				{
 					if (isStreamHost(pLobbyInterface))
 					{
+						if (refuseHostOnlyChange(pLobbyInterface, GameSpyColor[GSCOLOR_CHAT_NORMAL]))
+						{
+							return TRUE; // was a slash command
+						}
+
 						UnicodeString val = UnicodeString(uText.str() + 14); // skip the command
 
 						AsciiString asciiVal;
@@ -4103,6 +4132,11 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 				{
 					if (isStreamHost(pLobbyInterface))
 					{
+						if (refuseHostOnlyChange(pLobbyInterface, GameSpyColor[GSCOLOR_CHAT_NORMAL]))
+						{
+							return TRUE; // was a slash command
+						}
+
 						// GO announces the observer roster into the lobby chat; every player
 						// sees it, the host included.
 						pLobbyInterface->SendObserverListRequest(pLobbyInterface->GetCurrentLobby().lobbyID);
@@ -4212,9 +4246,15 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
 		if (pLobbyInterface != nullptr)
 		{
-			// This is just done clientside to show an error message, server validates it also
-			if (isStreamHost(pLobbyInterface))
+			// A GO lobby password is not a relay feature, so direct mode has no path to it at all:
+			// saying that beats sending a write GO is going to refuse.
+			if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
 			{
+				GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"Not available in direct mode."), GameMakeColor(255, 0, 0, 255), -1, -1);
+			}
+			else if (isStreamHost(pLobbyInterface))
+			{
+				// This is just done clientside to show an error message, server validates it also
 				if (newPassword.getLength() == 0 || newPassword.getLength() > GENERALS_ONLINE_LOBBY_MAX_PASSWORD_LENGTH)
 				{
 					UnicodeString errorMsg;
@@ -4247,11 +4287,16 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		NGMP_OnlineServices_LobbyInterface* pLobbyInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_LobbyInterface>();
 		if (pLobbyInterface != nullptr)
 		{
-			LobbyEntry& theLobby = pLobbyInterface->GetCurrentLobby();
-
-			// This is just done clientside to show an error message, server validates it also
-			if (isStreamHost(pLobbyInterface))
+			// Like /setpassword: a GO lobby password, so direct mode has nothing to offer here.
+			if (NGMP_OnlineServicesManager::Settings.Relay_Direct())
 			{
+				GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"Not available in direct mode."), GameMakeColor(255, 0, 0, 255), -1, -1);
+			}
+			else if (isStreamHost(pLobbyInterface))
+			{
+				LobbyEntry& theLobby = pLobbyInterface->GetCurrentLobby();
+
+				// This is just done clientside to show an error message, server validates it also
 				if (theLobby.passworded)
 				{
 					std::shared_ptr<WebSocket>  pWS = NGMP_OnlineServicesManager::GetWebSocket();

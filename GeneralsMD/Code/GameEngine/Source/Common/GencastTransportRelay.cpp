@@ -511,6 +511,15 @@ class RelayGencastTransport : public GencastTransport
 			m_delaySeconds = delaySeconds;
 		}
 
+		void SetStreamDelay(int seconds) override
+		{
+			m_delaySeconds = seconds;
+
+			// The announce body carries the delay and AnnounceLobby dedupes on that whole body, so
+			// re-announcing is what moves the value onto the relay's entry.
+			GencastAnnounceCurrentLobby();
+		}
+
 		void FetchWatchList(GencastWatchListCallback done) override
 		{
 			std::vector<GencastWatchEntry> entries;
