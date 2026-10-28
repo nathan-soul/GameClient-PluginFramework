@@ -3878,12 +3878,14 @@ Bool handleGameSetupSlashCommands(UnicodeString uText)
 		{
 			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/delay <seconds> - Sets how far behind live observers are held (host only)."), helpColor, -1, -1);
 		}
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(directMode
-			? L"/observers - Announces who is watching this lobby (host or streamer)."
-			: L"/observers - Announces who is watching this lobby (host only)."), helpColor, -1, -1);
-		GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(directMode
-			? L"/observerchat <on|off> - Lets pre-game observers send chat into this lobby (host or streamer)."
-			: L"/observerchat <on|off> - Lets pre-game observers send chat into this lobby (host only)."), helpColor, -1, -1);
+		// GO answers /observers and /observerchat for the lobby host alone, and the relay refuses
+		// both for everyone in direct mode until it supports them, so the help must not offer them
+		// there. Same test as the password lines below: the help lists only what a player can run.
+		if (!directMode)
+		{
+			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observers - Announces who is watching this lobby (host only)."), helpColor, -1, -1);
+			GadgetListBoxAddEntryText(listboxGameSetupChat, UnicodeString(L"/observerchat <on|off> - Lets pre-game observers send chat into this lobby (host only)."), helpColor, -1, -1);
+		}
 		// GO lobby passwords do not exist in direct mode, where both commands are refused, so the
 		// help must not offer them there.
 		if (!directMode)

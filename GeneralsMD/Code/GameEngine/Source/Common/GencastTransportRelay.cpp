@@ -1505,12 +1505,16 @@ class RelayGencastTransport : public GencastTransport
 			request["map_name"] = m_mapName;
 			// Display data for the watch list: what the host called the lobby. Omitted when GO
 			// does not have it, so the relay keeps whatever it already knew instead of blanking
-			// the row. No delay_seconds here: direct mode has no broadcast delay, and a stale
-			// local option would make the watch list advertise a hold the relay does not apply.
+			// the row.
 			if (!m_lobbyName.empty())
 			{
 				request["lobby_name"] = m_lobbyName;
 			}
+			// Direct mode has no broadcast delay, so the announce carries the contract's explicit
+			// "unknown" instead of leaving the field out: -1 is what the relay reads from a missing
+			// field, and it is what the watch list renders as "no delay". Said out loud because this
+			// body is merged into the entry the relay already holds, where silence is "no news".
+			request["delay_seconds"] = -1;
 			// The roster now travels in slots; players is kept as an empty array because the
 			// relay still carries the field, and nothing else fills it any more.
 			request["players"] = nlohmann::json::array();
