@@ -4,7 +4,8 @@
 
 #include "Common/GencastTransport.h"
 #include "Common/GlobalData.h"
-#include "Common/GencastClientLog.h"   // GencastDebugLog, for the permission lines
+#include "Common/GencastClientLog.h"
+#include "Common/GencastTls.h"   // GencastDebugLog, for the permission lines
 #include "Common/LiveObserver.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 // The pregame announce reads the player's Services id, and OnlineServices_Init.h only forward
@@ -1626,24 +1627,7 @@ namespace
 			curl_easy_setopt(easy, CURLOPT_URL, url.c_str());
 			curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L);
 
-			// wss:// needs trust anchors: this libcurl is OpenSSL, which does not read the Windows
-			// store. Same bundle, same rule as LiveObserver.
-			{
-				std::ifstream certFile("cacert.pem");
-
-				if (certFile.good())
-				{
-					certFile.close();
-					curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
-					curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
-					curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
-				}
-				else
-				{
-					curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
-					curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
-				}
-			}
+			GencastApplyTlsTrust(easy, "pregame-wss");
 
 			const CURLcode connected = curl_easy_perform(easy);
 

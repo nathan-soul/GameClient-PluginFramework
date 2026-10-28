@@ -575,6 +575,7 @@ set(GAMEENGINE_SRC
     Source/Common/GencastTransportRelay.cpp
     Source/Common/GencastBlackout.cpp
     Source/Common/GencastClientLog.cpp
+    Source/Common/GencastTls.cpp
     Source/Common/GlobalData.cpp
 #    Source/Common/INI/INI.cpp
 #    Source/Common/INI/INIAiData.cpp

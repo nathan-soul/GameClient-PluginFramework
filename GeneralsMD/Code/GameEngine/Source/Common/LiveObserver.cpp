@@ -26,6 +26,7 @@
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 #include "Common/GencastClientLog.h"
 #include "Common/LiveObserver.h"
+#include "Common/GencastTls.h"
 #include "Common/Recorder.h"
 #include "Common/GlobalData.h"
 #include "Common/FileSystem.h"
@@ -48,7 +49,6 @@
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
-#include <fstream>		// cacert.pem presence check, see connectToRelay
 #include <string>
 #include <thread>
 #include <windows.h>
@@ -190,21 +190,7 @@ namespace
 		curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);
 		curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 5L);
 
-		// Same CA handling as connectToRelay - this libcurl is OpenSSL-backed and has
-		// no trust anchors of its own, so https:// fails without an explicit bundle.
-		std::ifstream certFile("cacert.pem");
-		if (certFile.good())
-		{
-			certFile.close();
-			curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
-		}
-		else
-		{
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
-		}
+		GencastApplyTlsTrust(easy, "services-fetch");
 
 		curl_slist* headers = curl_slist_append(nullptr, "Accept: application/json");
 		if (!authToken.empty())
@@ -2299,25 +2285,7 @@ bool LiveObserver::connectToRelay()
 	curl_easy_setopt(easy, CURLOPT_URL, connectUrl.str());
 	curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L);
 
-	// wss:// needs a CA bundle. This libcurl is built against OpenSSL, which unlike Schannel does
-	// not consult the Windows certificate store, so without trust anchors it rejects every
-	// certificate as CURLE_PEER_FAILED_VERIFICATION (60). Same approach as HTTPRequest.cpp.
-	{
-		std::ifstream certFile("cacert.pem");
-		if (certFile.good())
-		{
-			certFile.close();
-			curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
-		}
-		else
-		{
-			liveObserverLog("LiveObserver: cacert.pem not found - TLS certificate verification DISABLED\n");
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
-		}
-	}
+	GencastApplyTlsTrust(easy, "relay-wss");
 
 	CURLM* multi = curl_multi_init();
 	if (!multi)

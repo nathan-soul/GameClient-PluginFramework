@@ -24,6 +24,7 @@
 #include "Common/PlayerList.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_Init.h"
 #include "Common/LiveStreamer.h"
+#include "Common/GencastTls.h"
 #include "Common/LiveObserver.h"	// LIVE_OBSERVER_LOGGING gate + LIVE_OBSERVER_BUILD_TAG
 #include "Common/GlobalData.h"
 #include "Common/GameCommon.h"		// LIVE_DELAY_SECONDS_DEFAULT / _MAX
@@ -46,7 +47,6 @@
 #include <cstdarg>
 #include <cstring>
 #include <cstdlib>
-#include <fstream>		// cacert.pem presence check, see connectToRelay
 #include <algorithm>
 #include <windows.h>
 
@@ -1116,25 +1116,7 @@ bool LiveStreamer::connectToRelay()
 	curl_easy_setopt(easy, CURLOPT_URL, url.str());
 	curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 2L);
 
-	// wss:// needs a CA bundle. This libcurl is built against OpenSSL, which unlike Schannel does
-	// not consult the Windows certificate store, so without trust anchors it rejects every
-	// certificate as CURLE_PEER_FAILED_VERIFICATION (60). Same approach as HTTPRequest.cpp.
-	{
-		std::ifstream certFile("cacert.pem");
-		if (certFile.good())
-		{
-			certFile.close();
-			curl_easy_setopt(easy, CURLOPT_CAINFO, "cacert.pem");
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
-		}
-		else
-		{
-			liveStreamLog("LiveStreamer: cacert.pem not found - TLS certificate verification DISABLED\n");
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 0L);
-			curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 0L);
-		}
-	}
+	GencastApplyTlsTrust(easy, "stream-wss");
 
 	CURLM* multi = curl_multi_init();
 	if (!multi)
