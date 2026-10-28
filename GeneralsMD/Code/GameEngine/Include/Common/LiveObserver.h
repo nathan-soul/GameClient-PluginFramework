@@ -392,9 +392,9 @@ private:
 	// broadcast delay. The pace is therefore clamped at nominal and never above: catching up
 	// stays the fast-forward gate's business, which already refuses inside the delay boundary.
 
-	// Window the source rate is measured over. One second is long enough to average out the
-	// arrival quantisation of individual records, short enough to follow a real dip.
-	enum { LIVE_PACE_WINDOW_MS = 1000 };
+	// Window the source rate is measured over: several heartbeats, so a burst of arrivals cannot
+	// read as a 60 fps source for a whole second and snap the pace back to nominal.
+	enum { LIVE_PACE_WINDOW_MS = 3000 };
 
 	// Samples kept for that window. The gate runs once per rendered frame, so this is sized for a
 	// high refresh rate; the window is enforced by timestamp, not by count.
