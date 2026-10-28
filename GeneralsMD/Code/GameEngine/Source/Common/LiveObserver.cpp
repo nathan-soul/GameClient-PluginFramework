@@ -1057,7 +1057,7 @@ void LiveObserver::logStreamEnd(const char* source, const char* detail)
 		TheGameLogic != nullptr ? TheGameLogic->getFrame() : 0u,
 		getLiveEdge(),
 		isConnected() ? 1 : 0,
-		m_playbackStarted.load() ? 1 : 0,
+		hasPlaybackStarted() ? 1 : 0,
 		getEffectiveDelaySeconds());
 }
 
