@@ -26,6 +26,13 @@ enum class EGencastMode
 
 const char* GencastModeName(EGencastMode mode);
 
+/// Whether the settings say "talk to the relay directly": the flag is set and it names a URL.
+///
+/// One test for every caller that has to know the mode without probing the relay - the lobby
+/// commands, the REGISTER frame and the transport's own resolvers must not answer it differently.
+/// GencastTransport::DetermineMode() adds the Services reachability probe on top of this.
+bool GencastDirectModeConfigured();
+
 /*
 **	The phase a lobby is being announced in.
 **
@@ -359,16 +366,10 @@ public:
 	//
 	// playerId is the wire slot id (1-based) and stays the fallback identity; userId is the GO
 	// Services id the relay prefers, and <= 0 means "not signed in". displayName and mapName
-	// are display data only, and so are lobbyName (the host's title) and delaySeconds (the
-	// lobby's minimum watch delay, -1 when unknown) - the watch list shows both, and neither
-	// decides anything about the stream.
+	// are display data only, and so is lobbyName (the host's title) - the watch list shows it,
+	// and it decides nothing about the stream.
 	virtual void SetAnnounceContext(long playerId, long userId, const std::string& displayName,
-		const std::string& mapName, const std::string& lobbyName = std::string(),
-		int delaySeconds = -1) {}
-
-	// Direct mode: the lobby's delay changed after it was announced. The announce body carries it
-	// and is deduped whole, so the setter re-announces instead of sending a request of its own.
-	virtual void SetStreamDelay(int seconds) {}
+		const std::string& mapName, const std::string& lobbyName = std::string()) {}
 
 	/*
 	**	The relay's lobby lifecycle, from the client's side.
@@ -411,10 +412,6 @@ GencastTransport* CreateRelayGencastTransport();
 **	announcing, in which phase, and whether anything actually changed - is in one place.
 */
 void GencastAnnounceCurrentLobby();
-
-/// A new broadcast delay for the lobby this client announces. Kept for that lobby, because GO's
-/// own copy is the host's and every later announce would otherwise put the old value back.
-void GencastSetStreamDelay(int seconds);
 
 /// Whether a lobby's stream is known to be live: the lobby observer view's one question, asked
 /// the way the current mode can answer it. Live is final for the caller; false means "not yet",

@@ -519,7 +519,9 @@ void LiveStreamer::registerForGame(const LiveStreamRegistration& registration)
 	// a non-host keeps the payload honest about who is claiming to describe the game.
 	if (registration.isHost)
 	{
-		if (registration.delaySeconds >= 0)
+		// Direct mode has no broadcast delay: the relay pins its hold to zero, so a value carried
+		// over from the local option would only make the watch list promise a wait nobody serves.
+		if (registration.delaySeconds >= 0 && !GencastDirectModeConfigured())
 		{
 			snprintf(scratch, sizeof(scratch), ",\"delay_seconds\":%d", registration.delaySeconds);
 			regJson += scratch;

@@ -91,6 +91,13 @@ namespace
 	}
 }
 
+bool GencastDirectModeConfigured()
+{
+	// The lobby commands and the REGISTER frame ask this too; a second copy of the test there
+	// would be a second answer the day the settings grow a third field.
+	return DirectModeConfigured();
+}
+
 const char* GencastModeName(EGencastMode mode)
 {
 	switch (mode)
@@ -313,7 +320,6 @@ namespace
 		std::string displayName;
 		std::string mapName;	// GO's map name, empty until the host has picked one
 		std::string lobbyName;	// the host's title for the lobby, display only
-		int delaySeconds = -1;	// the lobby's minimum watch delay, -1 when GO has none
 	};
 
 	namespace
@@ -357,39 +363,6 @@ namespace
 	{
 		std::lock_guard<std::mutex> lock(s_announcedMatch.mutex);
 		s_announcedMatch.valid = false;
-	}
-
-	// The delay this client was last told to announce, kept per lobby.
-	//
-	// GO's copy belongs to the host, so a streamer without the seat sees it stay at the old value:
-	// without holding the new one here, the next lobby refresh would put the old delay back.
-	struct AnnouncedDelay
-	{
-		std::mutex mutex;
-		std::string lobbyId;
-		int seconds = -1;
-	};
-
-	AnnouncedDelay s_announcedDelay;
-
-	void RememberAnnouncedDelay(const std::string& lobbyId, int seconds)
-	{
-		std::lock_guard<std::mutex> lock(s_announcedDelay.mutex);
-		s_announcedDelay.lobbyId = lobbyId;
-		s_announcedDelay.seconds = seconds;
-	}
-
-	/// The delay an announce for this lobby has to carry: the last one set here, else GO's.
-	int AnnouncedDelaySeconds(const DirectLobbyIdentity& identity)
-	{
-		std::lock_guard<std::mutex> lock(s_announcedDelay.mutex);
-
-		if (identity.lobbyId == s_announcedDelay.lobbyId && s_announcedDelay.seconds >= 0)
-		{
-			return s_announcedDelay.seconds;
-		}
-
-		return identity.delaySeconds;
 	}
 }
 
@@ -470,11 +443,9 @@ bool ResolveDirectLobbyIdentity(DirectLobbyIdentity& out)
 		out.userId = (long)userId;
 		out.displayName = localMember->display_name;
 		out.mapName = lobby.map_name;
-		// Display data for the watch list. The title is the host's own name for the lobby, and
-		// the delay is the lobby's minimum watch delay; both may be absent (a lobby that has
-		// not been named yet, or a GO that predates the field), which reads as empty/-1.
+		// Display data for the watch list: the host's own name for the lobby, which may be absent
+		// (a lobby that has not been named yet) and reads as empty.
 		out.lobbyName = lobby.name;
-		out.delaySeconds = lobby.stream_delay_seconds;
 
 		return true;
 	}
@@ -899,40 +870,12 @@ void GencastAnnounceCurrentLobby()
 	}
 
 	transport->SetAnnounceContext(identity.playerId, identity.userId, identity.displayName, mapName,
-		identity.lobbyName, AnnouncedDelaySeconds(identity));
+		identity.lobbyName);
 	transport->AnnounceLobby(identity.lobbyId, state);
 
 	// The relay now lists this match. Remember which one, so ending the stream does not depend on
 	// the GO lobby still existing at that moment.
 	RememberAnnouncedMatch(identity);
-}
-
-void GencastSetStreamDelay(int seconds)
-{
-	if (seconds < 0)
-	{
-		return;
-	}
-
-	// The seat check, and the mode test with it: outside direct mode there is no announce to
-	// attach a delay to, and GO's own host-only copy is the only one.
-	DirectLobbyIdentity identity;
-
-	if (!ResolveDirectLobbyIdentity(identity))
-	{
-		return;
-	}
-
-	RememberAnnouncedDelay(identity.lobbyId, seconds);
-
-	std::unique_ptr<GencastTransport> transport(CreateRelayGencastTransport());
-
-	if (transport == nullptr)
-	{
-		return;
-	}
-
-	transport->SetStreamDelay(seconds);
 }
 
 /*

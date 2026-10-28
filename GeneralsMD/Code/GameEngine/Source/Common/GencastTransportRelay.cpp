@@ -500,24 +500,13 @@ class RelayGencastTransport : public GencastTransport
 		bool IsAvailable() const override { return !BaseUrl().empty(); }
 
 		void SetAnnounceContext(long playerId, long userId, const std::string& displayName,
-			const std::string& mapName, const std::string& lobbyName,
-			int delaySeconds) override
+			const std::string& mapName, const std::string& lobbyName) override
 		{
 			m_playerId = playerId;
 			m_userId = userId;
 			m_displayName = displayName;
 			m_mapName = mapName;
 			m_lobbyName = lobbyName;
-			m_delaySeconds = delaySeconds;
-		}
-
-		void SetStreamDelay(int seconds) override
-		{
-			m_delaySeconds = seconds;
-
-			// The announce body carries the delay and AnnounceLobby dedupes on that whole body, so
-			// re-announcing is what moves the value onto the relay's entry.
-			GencastAnnounceCurrentLobby();
 		}
 
 		void FetchWatchList(GencastWatchListCallback done) override
@@ -1514,16 +1503,13 @@ class RelayGencastTransport : public GencastTransport
 
 			request["display_name"] = m_displayName;
 			request["map_name"] = m_mapName;
-			// Display data for the watch list: what the host called the lobby and the minimum
-			// watch delay it runs with. Omitted when GO does not have them, so the relay keeps
-			// whatever it already knew instead of blanking the row.
+			// Display data for the watch list: what the host called the lobby. Omitted when GO
+			// does not have it, so the relay keeps whatever it already knew instead of blanking
+			// the row. No delay_seconds here: direct mode has no broadcast delay, and a stale
+			// local option would make the watch list advertise a hold the relay does not apply.
 			if (!m_lobbyName.empty())
 			{
 				request["lobby_name"] = m_lobbyName;
-			}
-			if (m_delaySeconds >= 0)
-			{
-				request["delay_seconds"] = m_delaySeconds;
 			}
 			// The roster now travels in slots; players is kept as an empty array because the
 			// relay still carries the field, and nothing else fills it any more.
@@ -1609,10 +1595,9 @@ class RelayGencastTransport : public GencastTransport
 		long m_userId = 0;
 		std::string m_displayName;
 		std::string m_mapName;
-		// Display data for the watch list: the host's title and the lobby's minimum watch delay.
-		// Empty/-1 when GO does not have them; the relay then lists the map alone.
+		// Display data for the watch list: the host's title for the lobby. Empty when GO does
+		// not have it; the relay then lists the map alone.
 		std::string m_lobbyName;
-		int m_delaySeconds = -1;
 	};
 }
 
