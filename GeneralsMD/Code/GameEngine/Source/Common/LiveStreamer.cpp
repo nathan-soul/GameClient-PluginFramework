@@ -33,6 +33,7 @@
 // the announce reports the lobby's map, not the last loaded one
 #include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
 #include "GameNetwork/NetworkInterface.h"	// TheNetwork->getRunAhead(), this client's latency
+#include "GameLogic/GameLogic.h"	// TheGameLogic->getFrame(): the host's own logic rate
 #include "GameClient/ClientInstance.h"
 #include "GameClient/InGameUI.h"
 #include "GameNetwork/GameInfo.h"	// PLAYERTEMPLATE_OBSERVER, for the REGISTER is_observer flag
