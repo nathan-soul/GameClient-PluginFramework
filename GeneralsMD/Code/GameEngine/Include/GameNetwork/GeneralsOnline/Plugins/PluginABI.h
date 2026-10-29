@@ -132,6 +132,26 @@ struct GOGeneralPowerInfo
 };
 GO_ABI_ASSERT_LAYOUT(sizeof(GOGeneralPowerInfo) == 16);
 
+// Camera and view state at one instant, for tools that annotate or reproduce the 3D view. Generals'
+// field of view is horizontal; the vertical one follows from the aspect ratio. `target` is carried
+// because the engine's reported pitch is not the view matrix (the FX pitch moves the look-at point's
+// Z), so a caller must not re-derive the orientation from pitch alone. Matrices are deliberately
+// absent: anything that needs an exact projection should call worldToScreen, which is the engine's
+// own, rather than rebuild the pipeline on the other side of this ABI.
+struct GOCameraState
+{
+	float pos[3];                    // eye position, world units
+	float target[3];                 // look-at point, world units
+	float yawRadians;                // heading, engine convention
+	float pitchRadians;              // elevation, engine convention (sign unverified in game)
+	float fovHorizontalDegrees;      // Generals' FOV is horizontal
+	int32_t viewportX, viewportY, viewportWidth, viewportHeight;
+	uint32_t logicFrame;             // simulation clock at sample time
+	uint8_t paused;
+	uint8_t valid;                   // 1 when the rest of the struct means anything
+};
+GO_ABI_ASSERT_LAYOUT(sizeof(GOCameraState) == 60);
+
 struct GOContainedObjectInfo
 {
 	uint32_t objectId;
@@ -245,6 +265,11 @@ struct GOPluginHostAPI
 	// a screen edge (bottom/right) instead of only a fixed top-left-relative offset. Safe to call
 	// from onDrawOverlay every frame.
 	void (*getScreenSize)(int32_t* outWidth, int32_t* outHeight);
+
+	// Camera and view state, for a capture that has to know what the frame is looking at. Returns 1
+	// when a match is running and the values are meaningful, 0 otherwise (the struct is zeroed).
+	// Safe to call from onDrawOverlay, and cheap: it reads the tactical view, nothing more.
+	uint8_t (*getCameraState)(GOCameraState* out);
 
 	// Simulation clock, for ageing anything recorded from the events - wall-clock time drifts against
 	// a paused, delayed or fast-forwarded simulation. Return 0 when no game is running.

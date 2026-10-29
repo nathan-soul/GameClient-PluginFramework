@@ -336,6 +336,53 @@ namespace
 			*outHeight = (int32_t)h;
 	}
 
+	// ---- Camera and view state. ----
+
+	uint8_t HostAPI_GetCameraState(GOCameraState* out)
+	{
+		if (out == nullptr)
+			return 0;
+		memset(out, 0, sizeof(*out));
+		if (TheTacticalView == nullptr)
+			return 0;
+
+		const Coord3D eye = TheTacticalView->get3DCameraPosition();
+		const Coord3D dir = TheTacticalView->get3DCameraDirection();
+		const float len = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+
+		out->pos[0] = eye.x;
+		out->pos[1] = eye.y;
+		out->pos[2] = eye.z;
+
+		// A look-at point a fixed distance along the view direction. Carried instead of trusting the
+		// reported pitch: the FX pitch moves the target's Z, so pitch alone does not describe the view.
+		const float reach = 1000.0f;
+		out->target[0] = eye.x + ((len > 0.0f) ? (dir.x / len) * reach : 0.0f);
+		out->target[1] = eye.y + ((len > 0.0f) ? (dir.y / len) * reach : 0.0f);
+		out->target[2] = eye.z + ((len > 0.0f) ? (dir.z / len) * reach : 0.0f);
+
+		out->yawRadians = atan2f(dir.y, dir.x);
+		out->pitchRadians = (len > 0.0f) ? asinf(-dir.z / len) : 0.0f;
+
+		if (const CameraClass* cam = TheTacticalView->get3DCamera())
+			out->fovHorizontalDegrees = cam->Get_Horizontal_FOV();
+
+		if (TheDisplay != nullptr)
+		{
+			out->viewportWidth = (int32_t)TheDisplay->getWidth();
+			out->viewportHeight = (int32_t)TheDisplay->getHeight();
+		}
+
+		if (TheGameLogic != nullptr)
+		{
+			out->logicFrame = (uint32_t)TheGameLogic->getFrame();
+			out->paused = TheGameLogic->isGamePaused() ? 1 : 0;
+		}
+
+		out->valid = 1;
+		return 1;
+	}
+
 	// ---- Simulation clock. ----
 
 	uint32_t HostAPI_GetLogicFrame()
@@ -1114,6 +1161,7 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	api.drawText2DScaled = HostAPI_DrawText2DScaled;
 	api.drawRect2D = HostAPI_DrawRect2D;
 	api.getScreenSize = HostAPI_GetScreenSize;
+	api.getCameraState = HostAPI_GetCameraState;
 	api.getLogicFrame = HostAPI_GetLogicFrame;
 	api.getLogicFramesPerSecond = HostAPI_GetLogicFramesPerSecond;
 	api.getUnitProductionProgress = HostAPI_GetUnitProductionProgress;
