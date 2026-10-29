@@ -3960,6 +3960,7 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 
             // Forwarded even when the engine already handled this key; plugin hotkeys are the
             // plugin's own choice and are not expected to collide with F11/F10/F5/INS.
+            if (GOPluginManager::HasRenderHooks())
             {
                 uint32_t modifierFlags = 0;
                 if (TheKeyboard != nullptr)
