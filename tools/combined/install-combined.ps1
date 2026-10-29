@@ -122,8 +122,18 @@ if ($edge) {
 }
 
 Step "recording what was installed"
-$engineCommit = (& git -C $BuildDir rev-parse --short HEAD 2>$null | Out-String).Trim()
-$overlayCommit = (& git -C $OverlayDir rev-parse --short HEAD 2>$null | Out-String).Trim()
+# The synced overlay tree has no .git, and git writes "not a git repository" to stderr, which with
+# $ErrorActionPreference = 'Stop' is a terminating error. A missing commit is not a failed install.
+function CommitOf($dir) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $c = (& git -C $dir rev-parse --short HEAD 2>$null | Out-String).Trim()
+    $ErrorActionPreference = $prev
+    if ($c -and $c -notmatch 'fatal') { return $c } else { return 'unknown' }
+}
+
+$engineCommit = CommitOf $BuildDir
+$overlayCommit = CommitOf $OverlayDir
 $stampFile = Join-Path $pluginDir 'BUILD.txt'
 @(
     "engine   $engineCommit  (combined/gencast-overlay)"
