@@ -115,6 +115,7 @@
 #include "../OnlineServices_Init.h"
 #include "GameNetwork/GeneralsOnline/DiscordRichPresence.h"
 #include "GameNetwork/GeneralsOnline/OnlineServices_LobbyInterface.h"
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
 #include "GameNetwork/GameSpyOverlay.h"
 #include <chrono>
 #include "WW3D2/ww3d.h"
@@ -316,6 +317,8 @@ GameEngine::GameEngine()
 //-------------------------------------------------------------------------------------------------
 GameEngine::~GameEngine()
 {
+	GOPluginManager::UnloadAll();
+
 	delete m_discordRichPresence;
 	m_discordRichPresence = nullptr;
 
@@ -840,6 +843,9 @@ void GameEngine::init()
 
 	HideControlBar();
 
+	// One folder per plugin under the plugins directory; a failed load is logged, never fatal.
+	GOPluginManager::LoadPluginsFromDirectory("plugins");
+
 	m_discordRichPresence = new GeneralsOnlineDiscordRPC();
 	m_discordRichPresence->Initialize();
 }
@@ -999,6 +1005,10 @@ void GameEngine::update()
 
 			TheAudio->UPDATE();
 			TheGameClient->UPDATE();
+
+			// Deliberately outside the GameLogic pause gate, so plugin polling survives a pause.
+			GOPluginManager::Tick();
+
 			TheMessageStream->propagateMessages();
 
             if (TheNetwork != nullptr)

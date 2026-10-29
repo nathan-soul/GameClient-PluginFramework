@@ -59,6 +59,49 @@ struct ScreenshotWrittenMessage
 };
 static MPSCIntrusiveQueue<ScreenshotWrittenMessage> s_screenshotWrittenQueue;
 
+// Converts a locked surface copy (32-bit A8R8G8B8/X8R8G8B8 or 16-bit R5G6B5, `pitch` bytes per row)
+// into a tightly packed R8G8B8 buffer for stb_image_write. Caller owns the result.
+static unsigned char* ConvertSurfaceToRgb(const unsigned char* pixelData, unsigned int width,
+	unsigned int height, unsigned int pitch, bool is16Bit)
+{
+	unsigned char* image = new unsigned char[3 * width * height];
+
+	if (!is16Bit)
+	{
+		// Convert A8R8G8B8/X8R8G8B8 to R8G8B8
+		for (unsigned int y = 0; y < height; ++y)
+		{
+			const unsigned int* srcLine = reinterpret_cast<const unsigned int*>(pixelData + y * pitch);
+			for (unsigned int x = 0; x < width; ++x)
+			{
+				const unsigned int argb = srcLine[x];
+				const unsigned int index = 3 * (x + y * width);
+				image[index + 0] = (unsigned char)(argb >> 16); // r
+				image[index + 1] = (unsigned char)(argb >> 8);  // g
+				image[index + 2] = (unsigned char)(argb >> 0);  // b
+			}
+		}
+	}
+	else
+	{
+		// Convert R5G6B5 to R8G8B8
+		for (unsigned int y = 0; y < height; ++y)
+		{
+			const unsigned short* srcLine = reinterpret_cast<const unsigned short*>(pixelData + y * pitch);
+			for (unsigned int x = 0; x < width; ++x)
+			{
+				const unsigned short rgb = srcLine[x];
+				const unsigned int index = 3 * (x + y * width);
+				image[index + 0] = (unsigned char)((rgb & 0xF800) >> 8); // r
+				image[index + 1] = (unsigned char)((rgb & 0x07E0) >> 3); // g
+				image[index + 2] = (unsigned char)((rgb & 0x001F) << 3); // b
+			}
+		}
+	}
+
+	return image;
+}
+
 static DWORD WINAPI screenshotThreadFunc(LPVOID param)
 {
 	ScreenshotThreadData* data = static_cast<ScreenshotThreadData*>(param);
@@ -75,40 +118,7 @@ static DWORD WINAPI screenshotThreadFunc(LPVOID param)
 	const unsigned int height = data->height;
 
 	// Convert to R8G8B8 for stb_image_write.
-	unsigned char* image = new unsigned char[3 * width * height];
-
-	if (!data->is16Bit)
-	{
-		// Convert A8R8G8B8/X8R8G8B8 to R8G8B8
-		for (unsigned int y = 0; y < height; ++y)
-		{
-			const unsigned int* srcLine = reinterpret_cast<const unsigned int*>(data->pixelData + y * data->pitch);
-			for (unsigned int x = 0; x < width; ++x)
-			{
-				const unsigned int argb = srcLine[x];
-				const unsigned int index = 3 * (x + y * width);
-				image[index + 0] = (unsigned char)(argb >> 16); // r
-				image[index + 1] = (unsigned char)(argb >> 8);  // g
-				image[index + 2] = (unsigned char)(argb >> 0);  // b
-			}
-		}
-	}
-	else
-	{
-		// Convert R5G6B5 to R8G8B8
-		for (unsigned int y = 0; y < height; ++y)
-		{
-			const unsigned short* srcLine = reinterpret_cast<const unsigned short*>(data->pixelData + y * data->pitch);
-			for (unsigned int x = 0; x < width; ++x)
-			{
-				const unsigned short rgb = srcLine[x];
-				const unsigned int index = 3 * (x + y * width);
-				image[index + 0] = (unsigned char)((rgb & 0xF800) >> 8); // r
-				image[index + 1] = (unsigned char)((rgb & 0x07E0) >> 3); // g
-				image[index + 2] = (unsigned char)((rgb & 0x001F) << 3); // b
-			}
-		}
-	}
+	unsigned char* image = ConvertSurfaceToRgb(data->pixelData, width, height, data->pitch, data->is16Bit);
 
 	int success = 0;
 	switch (data->format)
@@ -137,6 +147,7 @@ static DWORD WINAPI screenshotThreadFunc(LPVOID param)
 
 	return success;
 }
+
 
 void W3D_UpdateScreenshotMessages()
 {
@@ -233,4 +244,68 @@ void W3D_TakeCompressedScreenshot(ScreenshotFormat format, Int jpegQuality)
 	{
 		delete threadData;
 	}
+}
+
+// The same readback as W3D_TakeCompressedScreenshot, but to a caller-chosen path and synchronously:
+// a capture needs a predictable filename and its sidecar has to be written beside a file that
+// already exists, so the thread-and-queue route the ordinary screenshot key uses is the wrong shape.
+// Returns true only when the file was written; outWidth/outHeight receive the back buffer's size.
+bool W3D_TakeCompressedScreenshotTo(const char* pathname, Int* outWidth, Int* outHeight)
+{
+	if (pathname == nullptr || pathname[0] == '\0')
+		return false;
+
+	SurfaceClass* surface = DX8Wrapper::_Get_DX8_Back_Buffer();
+	if (surface == nullptr)
+		return false;
+
+	SurfaceClass::SurfaceDescription surfaceDesc;
+	surface->Get_Description(surfaceDesc);
+
+	const bool is32Bit = surfaceDesc.Format == WW3D_FORMAT_A8R8G8B8 || surfaceDesc.Format == WW3D_FORMAT_X8R8G8B8;
+	const bool is16Bit = surfaceDesc.Format == WW3D_FORMAT_R5G6B5;
+	if (!is32Bit && !is16Bit)
+	{
+		DEBUG_LOG(("Screenshot does not support back buffer format %d", (int)surfaceDesc.Format));
+		surface->Release_Ref();
+		return false;
+	}
+
+	SurfaceClass* surfaceCopy = NEW_REF(SurfaceClass, (DX8Wrapper::_Create_DX8_Surface(surfaceDesc.Width, surfaceDesc.Height, surfaceDesc.Format)));
+	DX8Wrapper::_Copy_DX8_Rects(surface->Peek_D3D_Surface(), nullptr, 0, surfaceCopy->Peek_D3D_Surface(), nullptr);
+	surface->Release_Ref();
+	surface = nullptr;
+
+	struct Rect
+	{
+		int Pitch;
+		void* pBits;
+	} lrect;
+
+	lrect.pBits = surfaceCopy->Lock(&lrect.Pitch);
+	if (lrect.pBits == nullptr)
+	{
+		surfaceCopy->Release_Ref();
+		return false;
+	}
+
+	unsigned char* image = ConvertSurfaceToRgb(static_cast<const unsigned char*>(lrect.pBits),
+		surfaceDesc.Width, surfaceDesc.Height, lrect.Pitch, is16Bit);
+
+	surfaceCopy->Unlock();
+	surfaceCopy->Release_Ref();
+	surfaceCopy = nullptr;
+
+	const int success = stbi_write_png(pathname, surfaceDesc.Width, surfaceDesc.Height, 3, image, surfaceDesc.Width * 3);
+	delete[] image;
+
+	if (!success)
+	{
+		DEBUG_LOG(("Failed to write screenshot %s", pathname));
+		return false;
+	}
+
+	if (outWidth != nullptr) *outWidth = (Int)surfaceDesc.Width;
+	if (outHeight != nullptr) *outHeight = (Int)surfaceDesc.Height;
+	return true;
 }

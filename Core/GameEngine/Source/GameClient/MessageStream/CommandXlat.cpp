@@ -63,6 +63,7 @@
 #include "GameClient/GameClient.h"
 #include "GameClient/GameWindowManager.h"
 #include "GameClient/GameText.h"
+#include "GameClient/Keyboard.h"
 #include "GameClient/ParticleSys.h"
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/Shell.h"
@@ -92,6 +93,9 @@
 #include "GameNetwork/GameInfo.h"
 #include "GameNetwork/GameSpyOverlay.h"
 #include "GameNetwork/GameSpy/BuddyThread.h"
+#if defined(GENERALS_ONLINE)
+#include "GameNetwork/GeneralsOnline/Plugins/PluginManager.h"
+#endif
 
 #include "WW3D2/ww3d.h"
 #include "../OnlineServices_Init.h"
@@ -4055,6 +4059,20 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
                             : TheGameText->FETCH_OR_SUBSTITUTE("GUI:PaceMatchOff", L"Playback: full speed (F8)"));
                 }
                 disp = DESTROY_MESSAGE;
+            }
+
+            // Forwarded even when the engine already handled this key; plugin hotkeys are the
+            // plugin's own choice and are not expected to collide with F11/F10/F5/INS.
+            if (GOPluginManager::HasRenderHooks())
+            {
+                uint32_t modifierFlags = 0;
+                if (TheKeyboard != nullptr)
+                {
+                    if (TheKeyboard->isCtrl())  modifierFlags |= 1;
+                    if (TheKeyboard->isShift()) modifierFlags |= 2;
+                    if (TheKeyboard->isAlt())   modifierFlags |= 4;
+                }
+                GOPluginManager::DispatchRawKeyUp((uint32_t)key, modifierFlags);
             }
 
             break;
