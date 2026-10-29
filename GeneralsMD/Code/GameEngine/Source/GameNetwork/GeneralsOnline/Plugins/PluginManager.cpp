@@ -354,18 +354,19 @@ namespace
 		out->pos[1] = eye.y;
 		out->pos[2] = eye.z;
 
-		// A look-at point a fixed distance along the view direction. Carried instead of trusting the
-		// reported pitch: the FX pitch moves the target's Z, so pitch alone does not describe the view.
-		const float reach = 1000.0f;
-		out->target[0] = eye.x + ((len > 0.0f) ? (dir.x / len) * reach : 0.0f);
-		out->target[1] = eye.y + ((len > 0.0f) ? (dir.y / len) * reach : 0.0f);
-		out->target[2] = eye.z + ((len > 0.0f) ? (dir.z / len) * reach : 0.0f);
+		// The engine's own look-at point, carried instead of trusting the reported pitch: the FX pitch
+		// moves the target's Z, so pitch alone does not describe the view.
+		const Coord3D look = TheTacticalView->getPosition();
+		out->target[0] = look.x;
+		out->target[1] = look.y;
+		out->target[2] = look.z;
 
 		out->yawRadians = atan2f(dir.y, dir.x);
 		out->pitchRadians = (len > 0.0f) ? asinf(-dir.z / len) : 0.0f;
 
-		if (const CameraClass* cam = TheTacticalView->get3DCamera())
-			out->fovHorizontalDegrees = cam->Get_Horizontal_FOV();
+		// View::getFieldOfView is the horizontal FOV, which is the one Generals uses (View.h:246).
+		// get3DCamera() lives on W3DView, not on View, and this manager only ever sees the base class.
+		out->fovHorizontalDegrees = TheTacticalView->getFieldOfView();
 
 		if (TheDisplay != nullptr)
 		{
