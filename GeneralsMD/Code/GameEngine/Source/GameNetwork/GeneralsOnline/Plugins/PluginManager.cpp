@@ -2597,6 +2597,10 @@ void GOPluginManager::DispatchDrawOverlay()
 
 void GOPluginManager::DispatchRawKeyUp(uint32_t scanCode, uint32_t modifierFlags)
 {
+	// TEMP DIAGNOSTIC - remove once the hotkey delivery question is settled.
+	NetworkLog(ELogVerbosity::LOG_RELEASE, "[PluginDiag] rawkey=%u observer=%d hooks=%u",
+		(unsigned)scanCode, (int)IsLocalPlayerObserver(), (unsigned)s_renderHooks.size());
+
 	if (!IsLocalPlayerObserver())
 		return;
 	for (GORenderCallbacks& cb : s_renderHooks)
