@@ -1,6 +1,7 @@
 add_executable(z_generals WIN32)
 
-# Use a binary name that doesn't conflict with original game.
+# Use a binary name that doesn't conflict with original game. Upstream already has the suffix hook:
+# build with -DRTS_BUILD_OUTPUT_SUFFIX=_60 to get GeneralsOnlineZH_60.exe.
 if("${CMAKE_SYSTEM}" MATCHES "Windows")
     set_target_properties(z_generals PROPERTIES OUTPUT_NAME "GeneralsOnlineZH${RTS_BUILD_OUTPUT_SUFFIX}")
 else()
