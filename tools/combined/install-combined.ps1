@@ -13,7 +13,9 @@
 param(
     [string]$BuildDir = 'C:\build\plugin-capture',
     [string]$OverlayDir = 'C:\build\overlay-plugin-capture',
-    [string]$InstallDir = 'C:\Program Files (x86)\Origin Games\Command and Conquer Generals Zero Hour\Command and Conquer Generals Zero Hour - Gencast'
+    [string]$InstallDir = 'C:\Program Files (x86)\Origin Games\Command and Conquer Generals Zero Hour\Command and Conquer Generals Zero Hour - Gencast',
+    # The overlay tree is synced without .git, so the driver passes the commit it built.
+    [string]$OverlayCommit = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -133,7 +135,7 @@ function CommitOf($dir) {
 }
 
 $engineCommit = CommitOf $BuildDir
-$overlayCommit = CommitOf $OverlayDir
+if ($OverlayCommit) { $overlayCommit = $OverlayCommit } else { $overlayCommit = CommitOf $OverlayDir }
 $stampFile = Join-Path $pluginDir 'BUILD.txt'
 @(
     "engine   $engineCommit  (combined/gencast-overlay)"

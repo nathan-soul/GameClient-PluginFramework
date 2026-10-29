@@ -36,5 +36,6 @@ echo "— checking the plugin against the host ABI"
 $RUN 'cmd /c C:\build\run-host-test.bat' | grep -E 'plugin: name|INIT_OK|SHUTDOWN_OK'
 
 echo "— installing the combined build"
+OVERLAY_COMMIT=$(git -C "$OVERLAY" rev-parse --short HEAD 2>/dev/null || echo unknown)
 scp -q tools/combined/install-combined.ps1 "$HOST:C:/build/install-combined.ps1"
-$RUN 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\build\install-combined.ps1'
+$RUN "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\build\\install-combined.ps1 -OverlayCommit $OVERLAY_COMMIT"
