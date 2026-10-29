@@ -21,11 +21,13 @@ if not "%BRANCH%"=="combined/gencast-overlay" (
 
 cmake --preset win32-vcpkg -DCMAKE_MAKE_PROGRAM="C:\Users\Dennis\AppData\Local\Microsoft\WinGet\Packages\Ninja-build.Ninja_Microsoft.Winget.Source_8wekyb3d8bbwe\ninja.exe" -DVCPKG_TARGET_TRIPLET=x86-windows-static-md -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" -DRTS_BUILD_OUTPUT_SUFFIX=_60 -DRTS_BUILD_ZEROHOUR=ON -DRTS_BUILD_GENERALS=OFF -DRTS_BUILD_CORE_TOOLS=OFF -DRTS_BUILD_ZEROHOUR_TOOLS=OFF -DRTS_BUILD_CORE_EXTRAS=OFF -DRTS_BUILD_ZEROHOUR_EXTRAS=OFF > C:\build\plugin-capture\configure-combined.log 2>&1
 echo CONFIGURE_EXIT=%ERRORLEVEL%
-if errorlevel 1 goto fail
+rem "if errorlevel 1" only matches codes >= 1, and cmake reports failures as negative codes
+rem (-1 on a link error), so it silently passed a failed build through as BUILD_OK.
+if not "%ERRORLEVEL%"=="0" goto fail
 
 cmake --build --preset win32-vcpkg > C:\build\plugin-capture\build-combined.log 2>&1
 echo BUILD_EXIT=%ERRORLEVEL%
-if errorlevel 1 goto fail
+if not "%ERRORLEVEL%"=="0" goto fail
 
 echo BUILD_OK
 exit /b 0
