@@ -373,7 +373,9 @@ namespace
 
 		// View::getFieldOfView is the horizontal FOV, which is the one Generals uses (View.h:246).
 		// get3DCamera() lives on W3DView, not on View, and this manager only ever sees the base class.
-		out->fovHorizontalDegrees = TheTacticalView->getFieldOfView();
+		// The engine keeps it in radians while the ABI field promises degrees - convert here, or every
+		// consumer that trusts the name is off by a factor of 57.
+		out->fovHorizontalDegrees = (float)(TheTacticalView->getFieldOfView() * 180.0 / 3.14159265358979323846);
 
 		if (TheDisplay != nullptr)
 		{
@@ -2021,7 +2023,7 @@ namespace
 			if (g > 0) garrisonsJson += ",\n";
 			garrisonsJson += "    " + BuildGarrisonBlockJson(garrisons[g]);
 		}
-		json += "  \"garrisons\": [\n" + garrisonsJson + (garrisons.empty() ? "" : "\n  ") + "],\n";
+		json += "  \"garrisons\": [" + (garrisons.empty() ? std::string("],\n") : ("\n" + garrisonsJson + "\n  ],\n"));
 
 		json += FormatString("  \"counts\": {\"buildings\": %d, \"units\": %d, \"garrisons\": %d, \"dropped_offscreen\": %d},\n",
 			(int)buildingCount, (int)unitCount, (int)garrisons.size(), (int)droppedOffscreen);
