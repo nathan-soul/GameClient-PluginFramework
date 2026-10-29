@@ -128,6 +128,12 @@ static void* GetGameWindowForPlugins()
 	return (void*)ApplicationHWnd;
 }
 
+// The capture feature writes through the ordinary screenshot readback, but to a path it chooses.
+static bool ScreenshotToForPlugins(const char* path, int* outWidth, int* outHeight)
+{
+	return W3D_TakeCompressedScreenshotTo(path, outWidth, outHeight);
+}
+
 #define no_SAMPLE_DYNAMIC_LIGHT	1
 #ifdef SAMPLE_DYNAMIC_LIGHT
 static W3DDynamicLight * theDynamicLight = nullptr;
@@ -1045,6 +1051,7 @@ void W3DDisplay::init()
 	}
 
 	GOPluginManager::SetNativeHandleProviders(GetD3DDevice8ForPlugins, GetGameWindowForPlugins);
+	GOPluginManager::SetScreenshotWriter(ScreenshotToForPlugins);
 
 	// we're now online
 	m_initialized = true;
@@ -2160,6 +2167,10 @@ AGAIN:
 				}
 #endif
 				// render is all done!
+				// A capture requested this frame is written here: the back buffer holds the frame
+				// the plugin's metadata was sampled on, and the plugin's own EndScene drawing (its
+				// ImGui menu) happens inside End_Render, so this image has none of its pixels.
+				GOPluginManager::ProcessPendingCapture();
 				WW3D::End_Render();
 			}
 			else

@@ -64,6 +64,17 @@ public:
 	static void* GetD3DDevice8();
 	static void* GetGameWindow();
 
+	// The same seam for the PNG writer: it needs the D3D8 back buffer, which only the device layer
+	// can reach, so GameEngineDevice installs it at display init. Null in a headless build, and a
+	// capture request then refuses rather than writing a sidecar with no image.
+	typedef bool (*ScreenshotWriter)(const char* path, int* outWidth, int* outHeight);
+	static void SetScreenshotWriter(ScreenshotWriter writer);
+
+	// Runs the capture requested this frame, if any. Called from the display's draw path
+	// immediately before the frame is presented, so the pixels and the metadata describe one frame.
+	// Returns true when a pair was written.
+	static bool ProcessPendingCapture();
+
 private:
 	struct LoadedPlugin
 	{

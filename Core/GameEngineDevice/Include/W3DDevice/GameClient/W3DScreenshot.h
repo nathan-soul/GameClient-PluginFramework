@@ -22,6 +22,11 @@
 
 void W3D_TakeCompressedScreenshot(ScreenshotFormat format, Int jpegQuality);
 
+// Capture-feature variant: writes one PNG to exactly `pathname`, synchronously, so the caller can
+// write a sidecar beside a file that already exists. outWidth/outHeight receive the back buffer's
+// size. Returns false when the back buffer format is unsupported or the encode failed.
+bool W3D_TakeCompressedScreenshotTo(const char* pathname, Int* outWidth, Int* outHeight);
+
 // Called once per frame on the main thread to show messages for screenshots
 // that the screenshot thread has finished writing.
 void W3D_UpdateScreenshotMessages();

@@ -17,16 +17,23 @@
 #include "GameClient/View.h"
 #include "GameLogic/GameLogic.h"
 #include "GameLogic/Object.h"
+#include "GameLogic/TerrainLogic.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/SpecialPowerModule.h"
 #include "GameLogic/Module/ProductionUpdate.h"
 #include "GameLogic/Module/ContainModule.h"
 #include "GameLogic/Module/SupplyTruckAIUpdate.h"
+#include "Common/BuildAssistant.h" // CONSTRUCTION_COMPLETE
 #include "GameNetwork/NetworkDefs.h" // MAX_SLOTS
 #include "GameNetwork/GameInfo.h" // GameSlot::getTeamNumber
 
+#include <algorithm>
 #include <cctype>
 #include <climits> // INT_MAX
+#include <cmath>
+#include <cstdarg>
+#include <cstdlib>
+#include <cstring>
 #include <stdio.h>
 #include <string>
 
@@ -384,7 +391,141 @@ namespace
 		return 1;
 	}
 
-	// ---- Simulation clock. ----
+	// ---- Map identity and live objects, for a capture that has to name and place what it saw. ----
+
+	int32_t HostAPI_GetLocalPlayerIndex()
+	{
+		if (ThePlayerList == nullptr)
+			return -1;
+		Player* localPlayer = ThePlayerList->getLocalPlayer();
+		if (localPlayer == nullptr)
+			return -1;
+		return (int32_t)localPlayer->getPlayerIndex();
+	}
+
+	uint8_t HostAPI_GetMapInfo(GOMapInfo* out)
+	{
+		if (out == nullptr)
+			return 0;
+		memset(out, 0, sizeof(*out));
+		if (TheGlobalData == nullptr || TheTerrainLogic == nullptr)
+			return 0;
+
+		// The engine keeps the map's full path (Maps\<folder>\<file>.map); the stem is what a
+		// human recognises and what the filename slug is built from.
+		const char* full = TheGlobalData->m_mapName.str();
+		const char* leaf = full;
+		for (const char* p = full; p != nullptr && *p != '\0'; ++p)
+		{
+			if (*p == '\\' || *p == '/')
+				leaf = p + 1;
+		}
+		size_t length = strlen(leaf);
+		if (length > 4 && (leaf[length - 4] == '.'))
+			length -= 4;
+		if (length > 0)
+		{
+			if (length >= sizeof(out->name))
+				length = sizeof(out->name) - 1;
+			memcpy(out->name, leaf, length);
+			out->name[length] = '\0';
+		}
+
+		// W3DTerrainLogic overrides this virtual; the base implementation is a stub, so an extent
+		// of zero means "this build cannot answer" rather than "an empty map".
+		Region3D extent;
+		TheTerrainLogic->getExtent(&extent);
+		const Real width = extent.hi.x - extent.lo.x;
+		const Real height = extent.hi.y - extent.lo.y;
+		if (width > 0.0f && height > 0.0f)
+		{
+			out->extent[0] = (int32_t)width;
+			out->extent[1] = (int32_t)height;
+		}
+
+		out->valid = 1;
+		return 1;
+	}
+
+	// Walks the engine's world object list, not a player roster, so neutral and civilian owners
+	// are included - the object list is what destroy-all-objects iterates, not enumeratePlayerObjects.
+	int32_t HostAPI_GetMapObjects(GOObjectInfo* outObjects, int32_t maxCount, int32_t kindMask, int32_t* outTotal)
+	{
+		if (outTotal != nullptr)
+			*outTotal = 0;
+		if (TheGameLogic == nullptr)
+			return 0;
+
+		int32_t written = 0;
+		int32_t total = 0;
+		for (Object* obj = TheGameLogic->getFirstObject(); obj != nullptr; obj = obj->getNextObject())
+		{
+			if (obj->isEffectivelyDead())
+				continue;
+
+			const ThingTemplate* thingTemplate = obj->getTemplate();
+			if (thingTemplate == nullptr)
+				continue;
+
+			const bool isStructure = obj->isKindOf(KINDOF_STRUCTURE) ? true : false;
+			const bool isUnit = (!isStructure && (obj->isKindOf(KINDOF_VEHICLE) || obj->isKindOf(KINDOF_INFANTRY))) ? true : false;
+			const int32_t kind = isStructure ? GO_OBJECT_KIND_STRUCTURE : (isUnit ? GO_OBJECT_KIND_UNIT : GO_OBJECT_KIND_NONE);
+			if (kind == GO_OBJECT_KIND_NONE || (kindMask & kind) == 0)
+				continue;
+
+			++total;
+			if (outObjects == nullptr || written >= maxCount)
+				continue;
+
+			GOObjectInfo& info = outObjects[written];
+			memset(&info, 0, sizeof(info));
+			info.id = (int32_t)obj->getID();
+			snprintf(info.template_name, sizeof(info.template_name), "%s", thingTemplate->getName().str());
+
+			Player* owner = obj->getControllingPlayer();
+			info.owner_index = (owner != nullptr) ? (int32_t)owner->getPlayerIndex() : -1;
+
+			const Coord3D* pos = obj->getPosition();
+			if (pos != nullptr)
+			{
+				info.pos[0] = pos->x;
+				info.pos[1] = pos->y;
+				info.pos[2] = pos->z;
+
+				// A structure is projected at its base, which is where it actually stands; a unit at
+				// its own position. The research measured ~51 world units of error when a roof point
+				// is used instead at 38 degrees, so this is deliberate.
+				if (TheTacticalView != nullptr)
+				{
+					ICoord2D screen;
+					if (TheTacticalView->worldToScreen(pos, &screen))
+					{
+						const bool insideViewport = (TheDisplay == nullptr)
+							|| (screen.x >= 0 && screen.y >= 0
+								&& screen.x < TheDisplay->getWidth() && screen.y < TheDisplay->getHeight());
+						if (insideViewport)
+						{
+							info.screen[0] = (int32_t)screen.x;
+							info.screen[1] = (int32_t)screen.y;
+							info.on_screen = 1;
+						}
+					}
+				}
+			}
+
+			info.radius = obj->getGeometryInfo().getBoundingCircleRadius();
+			info.is_structure = isStructure ? 1 : 0;
+			info.complete = isStructure
+				? ((obj->getConstructionPercent() == CONSTRUCTION_COMPLETE) ? 1 : 0)
+				: 1;
+			++written;
+		}
+
+		if (outTotal != nullptr)
+			*outTotal = total;
+		return written;
+	}
+
 
 	uint32_t HostAPI_GetLogicFrame()
 	{
@@ -556,6 +697,22 @@ namespace
 		if (obj->isKindOf(KINDOF_FS_SUPPLY_CENTER))
 			return GO_BUILDING_CATEGORY_SUPPLY_STASH;
 		return GO_BUILDING_CATEGORY_NONE;
+	}
+
+	const char* HostAPI_GetObjectTemplateName(uint32_t objectId)
+	{
+		// One static buffer, matching the other string accessors: the caller copies it out.
+		static AsciiString s_objectTemplateName;
+		s_objectTemplateName.clear();
+		if (TheGameLogic == nullptr || objectId == 0)
+			return s_objectTemplateName.str();
+
+		Object* obj = TheGameLogic->findObjectByID((ObjectID)objectId);
+		if (obj == nullptr || obj->getTemplate() == nullptr)
+			return s_objectTemplateName.str();
+
+		s_objectTemplateName = obj->getTemplate()->getName();
+		return s_objectTemplateName.str();
 	}
 
 	uint8_t HostAPI_GetObjectScreenBounds(uint32_t objectId, int32_t* outX, int32_t* outY, int32_t* outWidth, int32_t* outHeight)
@@ -1118,7 +1275,835 @@ namespace
 			s_userDataPath = TheGlobalData->getPath_UserData().str();
 		return s_userDataPath.c_str();
 	}
+
+	// --------------------------------------------------------------------------------------------
+	// Capture: one PNG of the presented frame plus a JSON sidecar, written at the end of the frame
+	// the plugin asked on so the pixels and the coordinates cannot disagree.
+	// --------------------------------------------------------------------------------------------
+
+	struct PendingCaptureRequest
+	{
+		bool pending = false;
+		std::string name;
+		std::string trigger;
+		GOCameraState camera = {};
+		bool hasCamera = false;
+		std::vector<GOObjectInfo> objects;
+	};
+
+	PendingCaptureRequest s_pendingCapture;
+	GOPluginManager::ScreenshotWriter s_screenshotWriter = nullptr;
+
+	std::string FormatString(const char* fmt, ...)
+	{
+		char buffer[1024];
+		va_list args;
+		va_start(args, fmt);
+		vsnprintf(buffer, sizeof(buffer), fmt, args);
+		va_end(args);
+		return std::string(buffer);
+	}
+
+	std::string ToLowerAscii(std::string text)
+	{
+		for (size_t i = 0; i < text.size(); ++i)
+		{
+			const unsigned char ch = (unsigned char)text[i];
+			if (ch >= 'A' && ch <= 'Z')
+				text[i] = (char)(ch - 'A' + 'a');
+		}
+		return text;
+	}
+
+	// Lowercased [a-z0-9-], runs collapsed to one dash, at most 40 characters - the spec's filename
+	// rule. Anything else in the map name (spaces, parentheses, non-ASCII) becomes a dash.
+	std::string Slugify(const std::string& text)
+	{
+		std::string slug;
+		bool lastWasDash = false;
+		const std::string lower = ToLowerAscii(text);
+		for (size_t i = 0; i < lower.size() && slug.size() < 40; ++i)
+		{
+			const unsigned char ch = (unsigned char)lower[i];
+			const bool keep = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+			if (keep)
+			{
+				slug += (char)ch;
+				lastWasDash = false;
+			}
+			else if (!lastWasDash && !slug.empty())
+			{
+				slug += '-';
+				lastWasDash = true;
+			}
+		}
+		while (!slug.empty() && slug[slug.size() - 1] == '-')
+			slug.erase(slug.size() - 1);
+		if (slug.empty())
+			slug = "unknown-map";
+		return slug;
+	}
+
+	std::string JsonEscape(const std::string& text)
+	{
+		std::string out;
+		for (size_t i = 0; i < text.size(); ++i)
+		{
+			const unsigned char ch = (unsigned char)text[i];
+			switch (ch)
+			{
+				case '"':  out += "\\\""; break;
+				case '\\': out += "\\\\"; break;
+				case '\b': out += "\\b"; break;
+				case '\f': out += "\\f"; break;
+				case '\n': out += "\\n"; break;
+				case '\r': out += "\\r"; break;
+				case '\t': out += "\\t"; break;
+				default:
+					if (ch < 0x20)
+						out += FormatString("\\u%04x", (int)ch);
+					else
+						out += (char)ch;
+					break;
+			}
+		}
+		return out;
+	}
+
+	std::string JsonString(const std::string& text)
+	{
+		return std::string("\"") + JsonEscape(text) + "\"";
+	}
+
+	std::string JsonStringOrNull(const char* text)
+	{
+		if (text == nullptr || text[0] == '\0')
+			return "null";
+		return JsonString(text);
+	}
+
+	bool EnsureDirectory(const std::string& dir)
+	{
+		if (dir.empty())
+			return false;
+		std::string partial;
+		for (size_t i = 0; i < dir.size(); ++i)
+		{
+			partial += dir[i];
+			if ((dir[i] == '\\' || dir[i] == '/') && partial.size() > 3)
+				CreateDirectoryA(partial.c_str(), nullptr);
+		}
+		CreateDirectoryA(dir.c_str(), nullptr);
+		const DWORD attributes = GetFileAttributesA(dir.c_str());
+		return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+	}
+
+	bool WriteTextFile(const std::string& path, const std::string& text)
+	{
+		FILE* file = fopen(path.c_str(), "wb");
+		if (file == nullptr)
+			return false;
+		const size_t written = fwrite(text.data(), 1, text.size(), file);
+		fclose(file);
+		return written == text.size();
+	}
+
+	uint64_t Fnv1a64Update(uint64_t hash, const unsigned char* data, size_t length)
+	{
+		for (size_t i = 0; i < length; ++i)
+		{
+			hash ^= (uint64_t)data[i];
+			hash *= 1099511628211ULL;
+		}
+		return hash;
+	}
+
+	bool HashFile(const std::string& path, uint64_t* outHash, unsigned long long* outBytes)
+	{
+		FILE* file = fopen(path.c_str(), "rb");
+		if (file == nullptr)
+			return false;
+		uint64_t hash = 1469598103934665603ULL;
+		unsigned long long total = 0;
+		unsigned char buffer[65536];
+		size_t read = 0;
+		while ((read = fread(buffer, 1, sizeof(buffer), file)) > 0)
+		{
+			hash = Fnv1a64Update(hash, buffer, read);
+			total += read;
+		}
+		fclose(file);
+		if (outHash != nullptr) *outHash = hash;
+		if (outBytes != nullptr) *outBytes = total;
+		return true;
+	}
+
+	// Reads `"key": "value"` from `text` at or after `from`. Only ever used on a sidecar this same
+	// code wrote, so it can assume the compact formatting below.
+	bool JsonFindString(const std::string& text, const char* key, size_t from, std::string* out, size_t* outEnd)
+	{
+		const std::string needle = std::string("\"") + key + "\"";
+		size_t pos = text.find(needle, from);
+		if (pos == std::string::npos)
+			return false;
+		pos = text.find(':', pos + needle.size());
+		if (pos == std::string::npos)
+			return false;
+		++pos;
+		while (pos < text.size() && (text[pos] == ' ' || text[pos] == '	'))
+			++pos;
+		if (pos >= text.size() || text[pos] != '"')
+			return false;
+		++pos;
+		std::string value;
+		while (pos < text.size() && text[pos] != '"')
+		{
+			if (text[pos] == '\\' && pos + 1 < text.size())
+				++pos;
+			value += text[pos++];
+		}
+		if (out != nullptr) *out = value;
+		if (outEnd != nullptr) *outEnd = pos;
+		return true;
+	}
+
+	bool JsonFindInt(const std::string& text, const char* key, size_t from, long long* out)
+	{
+		const std::string needle = std::string("\"") + key + "\"";
+		size_t pos = text.find(needle, from);
+		if (pos == std::string::npos)
+			return false;
+		pos = text.find(':', pos + needle.size());
+		if (pos == std::string::npos)
+			return false;
+		++pos;
+		while (pos < text.size() && (text[pos] == ' ' || text[pos] == '	'))
+			++pos;
+		char* end = nullptr;
+		const long long value = strtoll(text.c_str() + pos, &end, 10);
+		if (end == text.c_str() + pos)
+			return false;
+		if (out != nullptr) *out = value;
+		return true;
+	}
+
+	const char* BuildingCategoryName(int32_t category)
+	{
+		switch (category)
+		{
+			case GO_BUILDING_CATEGORY_COMMAND_CENTER: return "command_center";
+			case GO_BUILDING_CATEGORY_WAR_FACTORY:    return "war_factory";
+			case GO_BUILDING_CATEGORY_BARRACKS:       return "barracks";
+			case GO_BUILDING_CATEGORY_AIRFIELD:       return "airfield";
+			case GO_BUILDING_CATEGORY_SUPPLY_STASH:   return "supply_stash";
+			default:                                   return nullptr;
+		}
+	}
+
+	struct GarrisonEntry
+	{
+		int32_t containerId = 0;
+		std::string templateName;
+		bool hasScreen = false;
+		int32_t screenX = 0;
+		int32_t screenY = 0;
+		std::string occupantsJson;   // array body, already serialised
+		int32_t occupantCount = 0;
+	};
+
+	std::string BuildOwnerJson(const GOObjectInfo& info, const Object* object)
+	{
+		const bool neutral = (object != nullptr) ? (object->isNeutralControlled() ? true : false)
+		                                         : (info.owner_index < 0);
+		std::string ownerName;
+		uint32_t color = 0;
+		if (info.owner_index >= 0)
+		{
+			ownerName = HostAPI_GetPlayerName((uint32_t)info.owner_index);
+			color = HostAPI_GetPlayerColor((uint32_t)info.owner_index);
+		}
+		return FormatString("{\"player_index\":%d,\"name\":%s,\"color_argb\":%u,\"neutral\":%s}",
+			(int)info.owner_index,
+			JsonString(ownerName).c_str(),
+			(unsigned)color,
+			neutral ? "true" : "false");
+	}
+
+	std::string BuildGarrisonBlockJson(const GarrisonEntry& entry)
+	{
+		return FormatString("{\"container_object_id\":%d,\"template\":%s,\"screen\":{\"x\":%d,\"y\":%d},\"occupants\":[%s]}",
+			(int)entry.containerId,
+			JsonStringOrNull(entry.templateName.empty() ? nullptr : entry.templateName.c_str()).c_str(),
+			(int)entry.screenX,
+			(int)entry.screenY,
+			entry.occupantsJson.c_str());
+	}
+
+	// Every live container with occupants, whether or not it is player-owned: the walk is the
+	// engine's world list, so a civilian/neutral garrison building is included. Containers whose
+	// point is off screen are dropped with the rest of the off-screen data.
+	void CollectGarrisons(std::vector<GarrisonEntry>& out)
+	{
+		out.clear();
+		if (TheGameLogic == nullptr || TheTacticalView == nullptr)
+			return;
+
+		for (Object* obj = TheGameLogic->getFirstObject(); obj != nullptr; obj = obj->getNextObject())
+		{
+			if (obj->isEffectivelyDead())
+				continue;
+			ContainModuleInterface* contain = obj->getContain();
+			if (contain == nullptr)
+				continue;
+			const UnsignedInt containedCount = contain->getContainCount();
+			if (containedCount == 0)
+				continue;
+
+			const Coord3D* pos = obj->getPosition();
+			if (pos == nullptr)
+				continue;
+			ICoord2D screen;
+			if (!TheTacticalView->worldToScreen(pos, &screen))
+				continue;
+			if (TheDisplay != nullptr && (screen.x < 0 || screen.y < 0
+				|| screen.x >= TheDisplay->getWidth() || screen.y >= TheDisplay->getHeight()))
+				continue;
+
+			GarrisonEntry entry;
+			entry.containerId = (int32_t)obj->getID();
+			if (obj->getTemplate() != nullptr)
+				entry.templateName = obj->getTemplate()->getName().str();
+			entry.hasScreen = true;
+			entry.screenX = (int32_t)screen.x;
+			entry.screenY = (int32_t)screen.y;
+
+			GOContainedObjectInfo occupants[64];
+			const uint32_t occupantCount = HostAPI_GetContainedObjects((uint32_t)entry.containerId,
+				occupants, (uint32_t)(sizeof(occupants) / sizeof(occupants[0])));
+			std::string body;
+			for (uint32_t i = 0; i < occupantCount; ++i)
+			{
+				if (i > 0)
+					body += ",";
+				body += FormatString("{\"object_id\":%u,\"template\":%s,\"player_index\":%d}",
+					(unsigned)occupants[i].objectId,
+					JsonStringOrNull(occupants[i].templateName).c_str(),
+					(int)occupants[i].playerIndex);
+			}
+			entry.occupantsJson = body;
+			entry.occupantCount = (int32_t)occupantCount;
+			out.push_back(entry);
+		}
+	}
+
+	std::string CaptureUtcNow()
+	{
+		SYSTEMTIME st;
+		GetSystemTime(&st);
+		return FormatString("%04d-%02d-%02dT%02d:%02d:%02dZ",
+			st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+	}
+
+	std::string CaptureLocalNow(int* outOffsetMinutes)
+	{
+		SYSTEMTIME st;
+		GetLocalTime(&st);
+
+		TIME_ZONE_INFORMATION tzi;
+		DWORD zone = GetTimeZoneInformation(&tzi);
+		int offsetMinutes = 0;
+		if (zone != TIME_ZONE_ID_INVALID)
+		{
+			LONG bias = tzi.Bias;
+			if (zone == TIME_ZONE_ID_DAYLIGHT)
+				bias += tzi.DaylightBias;
+			else
+				bias += tzi.StandardBias;
+			// Windows reports UTC = local + bias, so the local offset from UTC is the negative.
+			offsetMinutes = -(int)bias;
+		}
+		if (outOffsetMinutes != nullptr)
+			*outOffsetMinutes = offsetMinutes;
+
+		const char sign = (offsetMinutes < 0) ? '-' : '+';
+		const int absolute = (offsetMinutes < 0) ? -offsetMinutes : offsetMinutes;
+		return FormatString("%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d",
+			st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+			sign, absolute / 60, absolute % 60);
+	}
+
+	// Rewrites captures\manifest.js from the directory. A plain script, not JSON, because the studio
+	// is opened from file:// and cannot fetch - the same trick as the backdrop manifest.
+	void RebuildCaptureManifest(const std::string& directory)
+	{
+		std::vector<std::string> jsonFiles;
+		WIN32_FIND_DATAA findData;
+		HANDLE find = FindFirstFileA((directory + "*.json").c_str(), &findData);
+		if (find != INVALID_HANDLE_VALUE)
+		{
+			do
+			{
+				if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+					jsonFiles.push_back(findData.cFileName);
+			} while (FindNextFileA(find, &findData));
+			FindClose(find);
+		}
+		std::sort(jsonFiles.begin(), jsonFiles.end());
+		std::reverse(jsonFiles.begin(), jsonFiles.end());
+
+		std::string script =
+			"// Generated by the overlay plugin on every capture. A plain script, not JSON, because\n"
+			"// a page opened from file:// cannot fetch - but it can load a script.\n"
+			"window.OVERLAY_CAPTURES = [\n";
+
+		for (size_t i = 0; i < jsonFiles.size(); ++i)
+		{
+			const std::string jsonPath = directory + jsonFiles[i];
+			FILE* file = fopen(jsonPath.c_str(), "rb");
+			if (file == nullptr)
+				continue;
+			std::string text;
+			char buffer[8192];
+			size_t read = 0;
+			while ((read = fread(buffer, 1, sizeof(buffer), file)) > 0)
+				text.append(buffer, read);
+			fclose(file);
+
+			// Scope each lookup to its own block: "name" and "width" appear more than once.
+			const size_t imageAt = text.find("\"image\"");
+			const size_t captureAt = text.find("\"capture\"");
+			const size_t mapAt = text.find("\"map\"");
+			const size_t countsAt = text.find("\"counts\"");
+
+			std::string pngFile, utc, mapName;
+			long long width = 0, height = 0, buildingCount = 0;
+			JsonFindString(text, "file", imageAt == std::string::npos ? 0 : imageAt, &pngFile, nullptr);
+			JsonFindInt(text, "width", imageAt == std::string::npos ? 0 : imageAt, &width);
+			JsonFindInt(text, "height", imageAt == std::string::npos ? 0 : imageAt, &height);
+			JsonFindString(text, "utc", captureAt == std::string::npos ? 0 : captureAt, &utc, nullptr);
+			JsonFindString(text, "name", mapAt == std::string::npos ? 0 : mapAt, &mapName, nullptr);
+			JsonFindInt(text, "buildings", countsAt == std::string::npos ? 0 : countsAt, &buildingCount);
+			if (pngFile.empty())
+				continue;
+
+			std::string jsonLeaf = jsonFiles[i];
+			script += FormatString("  { name: %s, png: %s, json: %s, w: %lld, h: %lld, utc: %s, map: %s, buildingCount: %lld },\n",
+				JsonString(pngFile).c_str(),
+				JsonString(pngFile).c_str(),
+				JsonString(jsonLeaf).c_str(),
+				width, height,
+				JsonString(utc).c_str(),
+				JsonString(mapName).c_str(),
+				buildingCount);
+		}
+
+		script += "];\n";
+		WriteTextFile(directory + "manifest.js", script);
+	}
+
+	// Builds and writes the pair. Returns true only when both files exist at their final names.
+	bool WriteCapturePair(const PendingCaptureRequest& request, std::string* outPngPath)
+	{
+		if (s_screenshotWriter == nullptr || TheGameLogic == nullptr || TheGlobalData == nullptr)
+			return false;
+		if (!TheGameLogic->isInGame())
+			return false;
+
+		const std::string userDataRoot = HostAPI_GetUserDataPath();
+		if (userDataRoot.empty())
+			return false;
+		std::string captureDir = userDataRoot;
+		if (captureDir[captureDir.size() - 1] != '\\' && captureDir[captureDir.size() - 1] != '/')
+			captureDir += '\\';
+		captureDir += "OverlayPlugin\\captures\\";
+		if (!EnsureDirectory(captureDir))
+			return false;
+
+		// ---- Metadata, all from the frame the plugin asked on. ----
+		GOCameraState camera = request.camera;
+		if (!request.hasCamera && !HostAPI_GetCameraState(&camera))
+			return false;
+
+		GOMapInfo mapInfo = {};
+		HostAPI_GetMapInfo(&mapInfo);
+
+		std::vector<GOObjectInfo> objects = request.objects;
+		if (objects.empty())
+		{
+			int32_t total = 0;
+			objects.resize(4096);
+			const int32_t written = HostAPI_GetMapObjects(objects.data(), (int32_t)objects.size(),
+				GO_OBJECT_KIND_ALL, &total);
+			objects.resize((size_t)(written > 0 ? written : 0));
+		}
+
+		std::vector<GarrisonEntry> garrisons;
+		CollectGarrisons(garrisons);
+
+		// ---- Filename: <slug>__<YYYYMMDD>-<HHMMSS>__<W>x<H>, collision suffix -2, -3, ... ----
+		const std::string mapName = (mapInfo.name[0] != '\0') ? std::string(mapInfo.name) : std::string();
+		std::string slug = Slugify(!request.name.empty() ? request.name : mapName);
+
+		SYSTEMTIME now;
+		GetLocalTime(&now);
+		const std::string stem = FormatString("%s__%04d%02d%02d-%02d%02d%02d",
+			slug.c_str(), now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+
+		// A placeholder resolution first: the real one comes back from the writer, and the name has
+		// to contain it. Try the name with the display size, then rename if the image disagrees.
+		int imageWidth = (camera.viewportWidth > 0) ? camera.viewportWidth : 0;
+		int imageHeight = (camera.viewportHeight > 0) ? camera.viewportHeight : 0;
+		if ((imageWidth <= 0 || imageHeight <= 0) && TheDisplay != nullptr)
+		{
+			imageWidth = (int)TheDisplay->getWidth();
+			imageHeight = (int)TheDisplay->getHeight();
+		}
+
+		std::string baseName;
+		std::string pngPath;
+		std::string tmpPngPath;
+		for (int attempt = 1; attempt < 1000; ++attempt)
+		{
+			baseName = FormatString("%s__%dx%d%s", stem.c_str(), imageWidth, imageHeight,
+				attempt == 1 ? "" : FormatString("-%d", attempt).c_str());
+			pngPath = captureDir + baseName + ".png";
+			if (GetFileAttributesA(pngPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+				break;
+		}
+		tmpPngPath = pngPath + ".tmp";
+
+		int writtenWidth = imageWidth;
+		int writtenHeight = imageHeight;
+		if (!s_screenshotWriter(tmpPngPath.c_str(), &writtenWidth, &writtenHeight))
+		{
+			DeleteFileA(tmpPngPath.c_str());
+			return false;
+		}
+
+		// The image size is authoritative for the filename, so rename when the display size and the
+		// back buffer disagree (fullscreen scaling, a letterboxed render target).
+		if (writtenWidth > 0 && writtenHeight > 0 && (writtenWidth != imageWidth || writtenHeight != imageHeight))
+		{
+			imageWidth = writtenWidth;
+			imageHeight = writtenHeight;
+			std::string renamedBase;
+			std::string renamedPng;
+			for (int attempt = 1; attempt < 1000; ++attempt)
+			{
+				renamedBase = FormatString("%s__%dx%d%s", stem.c_str(), imageWidth, imageHeight,
+					attempt == 1 ? "" : FormatString("-%d", attempt).c_str());
+				renamedPng = captureDir + renamedBase + ".png";
+				if (GetFileAttributesA(renamedPng.c_str()) == INVALID_FILE_ATTRIBUTES)
+					break;
+			}
+			baseName = renamedBase;
+			pngPath = renamedPng;
+		}
+
+		uint64_t checksum = 0;
+		unsigned long long imageBytes = 0;
+		HashFile(tmpPngPath, &checksum, &imageBytes);
+
+		// ---- Sidecar ----
+		std::vector<std::string> degraded;
+		auto noteDegraded = [&degraded](const char* path) {
+			for (size_t i = 0; i < degraded.size(); ++i)
+				if (degraded[i] == path)
+					return;
+			degraded.push_back(path);
+		};
+
+		int offsetMinutes = 0;
+		const std::string localIso = CaptureLocalNow(&offsetMinutes);
+		const std::string utcIso = CaptureUtcNow();
+		const std::string captureId = FormatString("%04d%02d%02d-%02d%02d%02d-%04x",
+			now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond,
+			(unsigned)(GetTickCount() & 0xffff));
+
+		std::string json;
+		json += "{\n";
+		json += "  \"schema\": \"overlayplugin.capture/1\",\n";
+		json += FormatString("  \"capture\": {\"id\": %s, \"utc\": %s, \"local\": %s, \"trigger\": %s, \"plugin_version\": null, \"game_build\": null},\n",
+			JsonString(captureId).c_str(), JsonString(utcIso).c_str(), JsonString(localIso).c_str(),
+			JsonString(request.trigger.empty() ? "api" : request.trigger).c_str());
+		noteDegraded("capture.plugin_version");
+		noteDegraded("capture.game_build");
+
+		const bool isReplay = TheGameLogic->isInReplayGame() ? true : false;
+		json += FormatString("  \"match\": {\"kind\": %s, \"spectating\": %s, \"paused\": %s, \"speed\": null, \"logic_frame\": %u, \"logic_fps\": %u},\n",
+			isReplay ? "\"replay\"" : "\"live\"",
+			GOPluginManager::IsLocalPlayerObserver() ? "true" : "false",
+			camera.paused ? "true" : "false",
+			(unsigned)camera.logicFrame,
+			(unsigned)LOGICFRAMES_PER_SECOND);
+		noteDegraded("match.speed");
+
+		json += FormatString("  \"map\": {\"name\": %s, \"display_name\": null, \"source\": %s, \"width_world\": %s, \"height_world\": %s, \"origin_world\": null},\n",
+			mapName.empty() ? "null" : JsonString(mapName).c_str(),
+			mapName.empty() ? "\"unknown\"" : "\"filename\"",
+			mapInfo.extent[0] > 0 ? FormatString("%d", (int)mapInfo.extent[0]).c_str() : "null",
+			mapInfo.extent[1] > 0 ? FormatString("%d", (int)mapInfo.extent[1]).c_str() : "null");
+		noteDegraded("map.display_name");
+		noteDegraded("map.origin_world");
+		if (mapInfo.extent[0] <= 0) noteDegraded("map.width_world");
+		if (mapInfo.extent[1] <= 0) noteDegraded("map.height_world");
+
+		// The studio's existing reader wants a flat resolution; keep it beside the spec blocks.
+		json += FormatString("  \"resolution\": {\"w\": %d, \"h\": %d},\n", imageWidth, imageHeight);
+		json += FormatString("  \"image\": {\"file\": %s, \"format\": \"png\", \"width\": %d, \"height\": %d, \"bytes\": %llu, \"checksum\": {\"algorithm\": \"fnv1a64\", \"value\": \"%016llx\"}},\n",
+			JsonString(baseName + ".png").c_str(), imageWidth, imageHeight, imageBytes, (unsigned long long)checksum);
+
+		const int renderWidth = (camera.viewportWidth > 0) ? camera.viewportWidth : imageWidth;
+		const int renderHeight = (camera.viewportHeight > 0) ? camera.viewportHeight : imageHeight;
+		json += FormatString("  \"render\": {\"width\": %d, \"height\": %d, \"scale_to_image\": %.4f},\n",
+			renderWidth, renderHeight,
+			renderWidth > 0 ? (double)imageWidth / (double)renderWidth : 1.0);
+
+		// ---- Camera. forward/right/up are derived from the eye and the engine's own look-at point,
+		// which is the pair getCameraState exposes; near/far are not reachable, so they are null.
+		const double dx = (double)camera.target[0] - (double)camera.pos[0];
+		const double dy = (double)camera.target[1] - (double)camera.pos[1];
+		const double dz = (double)camera.target[2] - (double)camera.pos[2];
+		const double length = sqrt(dx * dx + dy * dy + dz * dz);
+		double fx = 0.0, fy = 0.0, fz = 0.0;
+		double rx = 0.0, ry = 0.0, rz = 0.0;
+		double ux = 0.0, uy = 0.0, uz = 0.0;
+		if (length > 1e-6)
+		{
+			fx = dx / length; fy = dy / length; fz = dz / length;
+			// right = normalize(forward x worldUp), up = right x forward. Generals' ground plane is
+			// Z-up, so this reproduces a conventional view basis without a matrix from the engine.
+			rx = fy * 1.0 - fz * 0.0;
+			ry = fz * 0.0 - fx * 1.0;
+			rz = fx * 0.0 - fy * 0.0;
+			const double rlen = sqrt(rx * rx + ry * ry + rz * rz);
+			if (rlen > 1e-6) { rx /= rlen; ry /= rlen; rz /= rlen; }
+			ux = ry * fz - rz * fy;
+			uy = rz * fx - rx * fz;
+			uz = rx * fy - ry * fx;
+		}
+		const double hfov = (double)camera.fovHorizontalDegrees;
+		const double vfov = (renderWidth > 0)
+			? 2.0 * atan(tan(hfov * 3.14159265358979323846 / 360.0) * (double)renderHeight / (double)renderWidth) * 180.0 / 3.14159265358979323846
+			: 0.0;
+
+		json += "  \"camera\": {\n";
+		json += "    \"projection\": \"perspective\",\n";
+		json += FormatString("    \"position\": {\"x\": %.3f, \"y\": %.3f, \"z\": %.3f},\n", camera.pos[0], camera.pos[1], camera.pos[2]);
+		json += FormatString("    \"target\": {\"x\": %.3f, \"y\": %.3f, \"z\": %.3f},\n", camera.target[0], camera.target[1], camera.target[2]);
+		json += FormatString("    \"forward\": {\"x\": %.6f, \"y\": %.6f, \"z\": %.6f},\n", fx, fy, fz);
+		json += FormatString("    \"right\": {\"x\": %.6f, \"y\": %.6f, \"z\": %.6f},\n", rx, ry, rz);
+		json += FormatString("    \"up\": {\"x\": %.6f, \"y\": %.6f, \"z\": %.6f},\n", ux, uy, uz);
+		json += FormatString("    \"pitch_deg\": %.4f, \"yaw_deg\": %.4f, \"roll_deg\": null,\n",
+			(double)camera.pitchRadians * 180.0 / 3.14159265358979323846,
+			(double)camera.yawRadians * 180.0 / 3.14159265358979323846);
+		json += FormatString("    \"height_world\": %.3f, \"zoom\": null,\n", camera.pos[2]);
+		json += FormatString("    \"vfov_deg\": %.4f, \"hfov_deg\": %.4f, \"near\": null, \"far\": null, \"ground_z\": null,\n", vfov, hfov);
+		json += FormatString("    \"viewport\": {\"x\": %d, \"y\": %d, \"width\": %d, \"height\": %d}\n",
+			(int)camera.viewportX, (int)camera.viewportY, renderWidth, renderHeight);
+		json += "  },\n";
+		noteDegraded("camera.roll_deg");
+		noteDegraded("camera.zoom");
+		noteDegraded("camera.near");
+		noteDegraded("camera.far");
+		noteDegraded("camera.ground_z");
+
+		// A projection matrix would have to reproduce the engine's own worldToScreen to 1 px; the
+		// dots come straight from that call instead, so the matrix stays null rather than competing.
+		json += "  \"transform\": {\"world_to_image\": null, \"ground_to_image\": null, \"image_to_ground\": null, \"residual_px\": null},\n";
+		noteDegraded("transform.world_to_image");
+		noteDegraded("transform.ground_to_image");
+		noteDegraded("transform.image_to_ground");
+		noteDegraded("transform.residual_px");
+
+		// ---- Objects. Only what is inside the viewport: an entry without a dot is wasted data. ----
+		int32_t buildingCount = 0;
+		int32_t unitCount = 0;
+		int32_t droppedOffscreen = 0;
+		std::string buildingsJson, unitsJson;
+
+		for (size_t i = 0; i < objects.size(); ++i)
+		{
+			const GOObjectInfo& info = objects[i];
+			if (!info.on_screen)
+			{
+				++droppedOffscreen;
+				continue;
+			}
+
+			const Object* object = TheGameLogic->findObjectByID((ObjectID)info.id);
+			const std::string templateName(info.template_name);
+			const char* displayNameRaw = templateName.empty() ? "" : HostAPI_GetTemplateDisplayName(templateName.c_str());
+			std::string displayName(displayNameRaw);
+
+			std::string badgeJson = "null";
+			int32_t badgeX = 0, badgeY = 0;
+			if (HostAPI_GetObjectHealthBarScreenPosition((uint32_t)info.id, &badgeX, &badgeY))
+				badgeJson = FormatString("{\"x\": %d, \"y\": %d}", (int)badgeX, (int)badgeY);
+
+			std::string garrisonJson;
+			for (size_t g = 0; g < garrisons.size(); ++g)
+			{
+				if (garrisons[g].containerId == info.id)
+				{
+					garrisonJson = std::string(",\n      \"garrison\": ") + BuildGarrisonBlockJson(garrisons[g]);
+					break;
+				}
+			}
+
+			const std::string ownerJson = BuildOwnerJson(info, object);
+
+			if (info.is_structure)
+			{
+				if (buildingCount > 0) buildingsJson += ",\n";
+				const char* category = BuildingCategoryName((int32_t)HostAPI_GetObjectBuildingCategory((uint32_t)info.id));
+				std::string heightJson = "null";
+				if (object != nullptr)
+					heightJson = FormatString("%.3f", object->getGeometryInfo().getMaxHeightAbovePosition());
+				if (templateName.empty()) noteDegraded("buildings[].template");
+				if (displayName.empty()) noteDegraded("buildings[].display_name");
+				if (category == nullptr) noteDegraded("buildings[].category");
+				if (heightJson == "null") noteDegraded("buildings[].height_world");
+				if (info.radius <= 0.0f) noteDegraded("buildings[].footprint.radius_world");
+
+				buildingsJson += FormatString(
+					"    {\"object_id\": %d, \"template\": %s, \"display_name\": %s, \"category\": %s,\n"
+					"     \"owner\": %s,\n"
+					"     \"world\": {\"x\": %.3f, \"y\": %.3f, \"z\": %.3f}, \"height_world\": %s,\n"
+					"     \"footprint\": {\"radius_world\": %s},\n"
+					"     \"screen\": {\"x\": %d, \"y\": %d, \"clamped\": false}, \"badge\": %s%s}",
+					(int)info.id,
+					JsonStringOrNull(templateName.empty() ? nullptr : templateName.c_str()).c_str(),
+					JsonStringOrNull(displayName.empty() ? nullptr : displayName.c_str()).c_str(),
+					JsonStringOrNull(category).c_str(),
+					ownerJson.c_str(),
+					info.pos[0], info.pos[1], info.pos[2],
+					heightJson.c_str(),
+					info.radius > 0.0f ? FormatString("%.3f", info.radius).c_str() : "null",
+					(int)info.screen[0], (int)info.screen[1],
+					badgeJson.c_str(),
+					garrisonJson.c_str());
+				++buildingCount;
+			}
+			else
+			{
+				if (unitCount > 0) unitsJson += ",\n";
+				if (templateName.empty()) noteDegraded("units[].template");
+				if (displayName.empty()) noteDegraded("units[].display_name");
+				if (info.radius <= 0.0f) noteDegraded("units[].radius_world");
+
+				unitsJson += FormatString(
+					"    {\"object_id\": %d, \"template\": %s, \"display_name\": %s,\n"
+					"     \"owner\": %s,\n"
+					"     \"world\": {\"x\": %.3f, \"y\": %.3f, \"z\": %.3f}, \"radius_world\": %s,\n"
+					"     \"screen\": {\"x\": %d, \"y\": %d, \"clamped\": false}, \"badge\": %s, \"is_structure\": false%s}",
+					(int)info.id,
+					JsonStringOrNull(templateName.empty() ? nullptr : templateName.c_str()).c_str(),
+					JsonStringOrNull(displayName.empty() ? nullptr : displayName.c_str()).c_str(),
+					ownerJson.c_str(),
+					info.pos[0], info.pos[1], info.pos[2],
+					info.radius > 0.0f ? FormatString("%.3f", info.radius).c_str() : "null",
+					(int)info.screen[0], (int)info.screen[1],
+					badgeJson.c_str(),
+					garrisonJson.c_str());
+				++unitCount;
+			}
+		}
+
+		json += "  \"buildings\": [\n" + buildingsJson + (buildingCount > 0 ? "\n  " : "") + "],\n";
+		json += "  \"units\": [\n" + unitsJson + (unitCount > 0 ? "\n  " : "") + "],\n";
+
+		std::string garrisonsJson;
+		for (size_t g = 0; g < garrisons.size(); ++g)
+		{
+			if (g > 0) garrisonsJson += ",\n";
+			garrisonsJson += "    " + BuildGarrisonBlockJson(garrisons[g]);
+		}
+		json += "  \"garrisons\": [\n" + garrisonsJson + (garrisons.empty() ? "" : "\n  ") + "],\n";
+
+		json += FormatString("  \"counts\": {\"buildings\": %d, \"units\": %d, \"garrisons\": %d, \"dropped_offscreen\": %d},\n",
+			(int)buildingCount, (int)unitCount, (int)garrisons.size(), (int)droppedOffscreen);
+
+		json += "  \"degraded\": [";
+		for (size_t i = 0; i < degraded.size(); ++i)
+		{
+			if (i > 0) json += ", ";
+			json += JsonString(degraded[i]);
+		}
+		json += "]\n}\n";
+
+		const std::string jsonFinalPath = captureDir + baseName + ".json";
+		const std::string jsonTmpPath = jsonFinalPath + ".tmp";
+		if (!WriteTextFile(jsonTmpPath, json))
+		{
+			DeleteFileA(tmpPngPath.c_str());
+			return false;
+		}
+
+		// Rename only once both files are complete, so a watcher never sees half a pair.
+		if (!MoveFileExA(tmpPngPath.c_str(), pngPath.c_str(), MOVEFILE_REPLACE_EXISTING))
+		{
+			DeleteFileA(tmpPngPath.c_str());
+			DeleteFileA(jsonTmpPath.c_str());
+			return false;
+		}
+		if (!MoveFileExA(jsonTmpPath.c_str(), jsonFinalPath.c_str(), MOVEFILE_REPLACE_EXISTING))
+		{
+			DeleteFileA(jsonTmpPath.c_str());
+			return false;
+		}
+
+		RebuildCaptureManifest(captureDir);
+
+		if (TheInGameUI != nullptr)
+		{
+			UnicodeString caption;
+			caption.translate("Capture saved");
+			UnicodeString fileName;
+			fileName.translate((baseName + ".png").c_str());
+			TheInGameUI->message(L"%s: %s", caption.str(), fileName.str());
+		}
+
+		if (outPngPath != nullptr)
+			*outPngPath = pngPath;
+		return true;
+	}
+
+	int32_t HostAPI_RequestCaptureEx(const GOCaptureRequest* request)
+	{
+		if (request == nullptr)
+			return 0;
+		if (TheGameLogic == nullptr || !TheGameLogic->isInGame())
+			return 0;
+		if (s_pendingCapture.pending)
+			return 0;
+
+		PendingCaptureRequest pending;
+		pending.pending = true;
+		if (request->name != nullptr)
+			pending.name = request->name;
+		if (request->trigger != nullptr)
+			pending.trigger = request->trigger;
+		if (request->camera != nullptr)
+		{
+			pending.camera = *request->camera;
+			pending.hasCamera = true;
+		}
+		if (request->objects != nullptr && request->object_count > 0)
+			pending.objects.assign(request->objects, request->objects + request->object_count);
+		s_pendingCapture = pending;
+		return 1;
+	}
+
+	int32_t HostAPI_RequestCapture(const char* nameOrNull)
+	{
+		GOCaptureRequest request = {};
+		request.name = nameOrNull;
+		request.trigger = "api";
+		return HostAPI_RequestCaptureEx(&request);
+	}
 } // anonymous namespace
+
 
 // ------------------------------------------------------------------------------------------------
 
@@ -1144,6 +2129,35 @@ void* GOPluginManager::GetGameWindow()
 	return (s_gameWindowProvider != nullptr) ? s_gameWindowProvider() : nullptr;
 }
 
+void GOPluginManager::SetScreenshotWriter(ScreenshotWriter writer)
+{
+	s_screenshotWriter = writer;
+}
+
+// Called by the display immediately before the frame is presented. The back buffer at this point
+// holds the frame the plugin's metadata was sampled on, and the plugin's own EndScene-time drawing
+// (its ImGui menu) has not happened yet, so the image is the game's frame without plugin pixels.
+bool GOPluginManager::ProcessPendingCapture()
+{
+	if (!s_pendingCapture.pending)
+		return false;
+
+	// Take the request out first: a failed write must not retry every frame.
+	const PendingCaptureRequest request = s_pendingCapture;
+	s_pendingCapture = PendingCaptureRequest();
+
+	std::string pngPath;
+	if (!WriteCapturePair(request, &pngPath))
+	{
+		Log("capture failed - no pair written");
+		return false;
+	}
+
+	Log(FormatString("capture written: %s", pngPath.c_str()).c_str());
+	return true;
+}
+
+
 GOPluginHostAPI GOPluginManager::BuildHostAPI()
 {
 	GOPluginHostAPI api = {};
@@ -1155,6 +2169,7 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	api.getPlayerColor = HostAPI_GetPlayerColor;
 	api.getActivePlayers = HostAPI_GetActivePlayers;
 	api.isLocalPlayerObserver = HostAPI_IsLocalPlayerObserver;
+	api.getLocalPlayerIndex = HostAPI_GetLocalPlayerIndex;
 	api.getPlayerGeneralPowers = HostAPI_GetPlayerGeneralPowers;
 	api.drawTemplateIcon2D = HostAPI_DrawTemplateIcon2D;
 	api.drawPowerIcon2D = HostAPI_DrawPowerIcon2D;
@@ -1163,6 +2178,10 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	api.drawRect2D = HostAPI_DrawRect2D;
 	api.getScreenSize = HostAPI_GetScreenSize;
 	api.getCameraState = HostAPI_GetCameraState;
+	api.getMapInfo = HostAPI_GetMapInfo;
+	api.getMapObjects = HostAPI_GetMapObjects;
+	api.requestCapture = HostAPI_RequestCapture;
+	api.requestCaptureEx = HostAPI_RequestCaptureEx;
 	api.getLogicFrame = HostAPI_GetLogicFrame;
 	api.getLogicFramesPerSecond = HostAPI_GetLogicFramesPerSecond;
 	api.getUnitProductionProgress = HostAPI_GetUnitProductionProgress;
@@ -1170,6 +2189,7 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	api.worldToScreen = HostAPI_WorldToScreen;
 	api.worldToScreenClamped = HostAPI_WorldToScreenClamped;
 	api.getObjectBuildingCategory = HostAPI_GetObjectBuildingCategory;
+	api.getObjectTemplateName = HostAPI_GetObjectTemplateName;
 	api.getObjectScreenBounds = HostAPI_GetObjectScreenBounds;
 	api.getObjectHealthBarScreenPosition = HostAPI_GetObjectHealthBarScreenPosition;
 	api.teleportViewportTo = HostAPI_TeleportViewportTo;

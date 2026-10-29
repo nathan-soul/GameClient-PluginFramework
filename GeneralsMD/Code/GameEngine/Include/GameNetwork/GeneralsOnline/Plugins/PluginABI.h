@@ -152,6 +152,61 @@ struct GOCameraState
 };
 GO_ABI_ASSERT_LAYOUT(sizeof(GOCameraState) == 60);
 
+// Map identity, for a capture that has to name what it recorded. `name` is the map's file stem
+// (lowercased by the writer, not here); `extent` is the playable area's world size in X and Y.
+// `valid` is 1 only when a match is loaded and the fields above mean anything.
+struct GOMapInfo
+{
+    char name[64];
+    int32_t extent[2];
+    int32_t valid;
+};
+GO_ABI_ASSERT_LAYOUT(sizeof(GOMapInfo) == 76);
+
+// Which live objects getMapObjects returns. GO_OBJECT_KIND_UNIT is the same predicate the event
+// payloads use for isUnit (KINDOF_VEHICLE || KINDOF_INFANTRY), and GO_OBJECT_KIND_STRUCTURE is
+// KINDOF_STRUCTURE, so a plugin's two views of the world agree with each other.
+enum EGOObjectKind
+{
+    GO_OBJECT_KIND_NONE      = 0,
+    GO_OBJECT_KIND_STRUCTURE = 1 << 0,
+    GO_OBJECT_KIND_UNIT      = 1 << 1,
+    GO_OBJECT_KIND_ALL       = GO_OBJECT_KIND_STRUCTURE | GO_OBJECT_KIND_UNIT,
+};
+
+// One live object, flattened for a plugin that has to place something on it. `pos` is the base for
+// a structure and the object's own position for a unit. `screen` is only written when `on_screen`
+// is 1. `radius` is the bounding circle radius in world units, 0 when unknown.
+struct GOObjectInfo
+{
+    int32_t id;
+    char    template_name[64];
+    int32_t owner_index;      // player index, -1 for neutral/civilian
+    float   pos[3];
+    float   radius;
+    int32_t is_structure;
+    int32_t complete;         // structure finished building (1 for units)
+    int32_t screen[2];        // projected base/position, valid only when on_screen
+    int32_t on_screen;        // 1 when pos is inside the view frustum - visibility, nothing more
+};
+GO_ABI_ASSERT_LAYOUT(sizeof(GOObjectInfo) == 108);
+
+// The metadata a plugin sends with a capture request, so the sidecar describes the frame the plugin
+// was actually looking at rather than a re-sample taken later. All pointers are read during the
+// call and never retained; `camera` and `objects` may be null, in which case the host samples its
+// own. `name` is a filename hint (the map slug is used when empty), and `trigger` is one of
+// "hotkey", "menu" or "api".
+struct GOCaptureRequest
+{
+    const char* name;
+    const char* trigger;
+    const GOCameraState* camera;
+    const GOObjectInfo* objects;
+    int32_t object_count;
+};
+GO_ABI_ASSERT_LAYOUT(sizeof(GOCaptureRequest) == 20);
+
+
 struct GOContainedObjectInfo
 {
 	uint32_t objectId;
@@ -228,6 +283,11 @@ struct GOPluginHostAPI
 	// also enforces it - while false, no callbacks are delivered and GO_Plugin_Tick is not called.
 	uint8_t (*isLocalPlayerObserver)();
 
+	// The local client's own player index, or -1 when there is no local player (no match, shell).
+	// Lets a plugin tell a building's owner apart from the observer's, which is what a per-player
+	// colour or an "enemy" marker needs.
+	int32_t (*getLocalPlayerIndex)();
+
 	// General powers the player owns: required science plus a live object carrying the module, so a
 	// superweapon only counts once its building exists. The event hooks fire only on use, so this is
 	// the only way to show owned-but-unused powers. Cooldowns come from the module's own clock and
@@ -270,6 +330,30 @@ struct GOPluginHostAPI
 	// when a match is running and the values are meaningful, 0 otherwise (the struct is zeroed).
 	// Safe to call from onDrawOverlay, and cheap: it reads the tactical view, nothing more.
 	uint8_t (*getCameraState)(GOCameraState* out);
+
+	// Map identity and playable extent. Returns 1 when a match is loaded, 0 otherwise (the struct
+	// is zeroed). Same lifetime and thread rules as getCameraState.
+	uint8_t (*getMapInfo)(GOMapInfo* out);
+
+	// Walks every live object in the world - structures only, units only, or both, per kindMask -
+	// and writes up to maxCount of them. Neutral and civilian owners are included, because the
+	// walk is the engine's world list rather than a player roster. Structures are projected at
+	// their base, units at their own position; on_screen is 1 only when that point is inside the
+	// view frustum (visibility of the point, not of the whole object). Returns how many were
+	// written; outTotal, when not null, receives how many matched before truncation.
+	int32_t (*getMapObjects)(GOObjectInfo* outObjects, int32_t maxCount, int32_t kindMask, int32_t* outTotal);
+
+	// Requests one capture: a PNG of the frame plus a JSON sidecar beside it, written at the end of
+	// the frame this was called on, so the image and the coordinates describe the same frame. The
+	// plugin's own metadata is used when supplied, which is what keeps the sidecar honest when the
+	// camera is moving. Returns 1 when accepted, 0 when refused (no match, already pending).
+	// `name_or_null` is a filename hint; the map name is used when it is null.
+	int32_t (*requestCapture)(const char* name_or_null);
+
+	// The same request with the metadata attached. This is what a plugin should use: the host
+	// writes the plugin's camera and object snapshot rather than re-sampling them, so the sidecar
+	// cannot disagree with what the plugin drew. Returns 1 when accepted, 0 when refused.
+	int32_t (*requestCaptureEx)(const GOCaptureRequest* request);
 
 	// Simulation clock, for ageing anything recorded from the events - wall-clock time drifts against
 	// a paused, delayed or fast-forwarded simulation. Return 0 when no game is running.
@@ -338,6 +422,12 @@ struct GOPluginHostAPI
 	// GO_BUILDING_CATEGORY_NONE if it isn't a building, or isn't one of the five). For per-category
 	// UI treatment - e.g. a different queue-panel offset for airfields vs war factories.
 	uint8_t (*getObjectBuildingCategory)(uint32_t objectId);
+
+	// The ThingTemplate name of any live object ("AmericaWarFactory", "AmericaVehicleDozer"), for
+	// labelling a dot the engine gave a position for. Empty string when the id does not resolve.
+	// Only its own most recent return value is live - copy it out immediately (same rule as
+	// getPlayerName and getTemplateDisplayName), and it is not thread-safe.
+	const char* (*getObjectTemplateName)(uint32_t objectId);
 
 	// Player card queries. Pure, same playerIndex semantics as getPlayerColor, returning 0 / empty
 	// string / -1 when it does not resolve. Each string-returning function owns one buffer, so only
