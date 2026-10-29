@@ -25,14 +25,20 @@ The two features were developed on separate lines from the same base:
 | Line | Has | Branch |
 |---|---|---|
 | gencast client | GO login, direct mode, the relay transport | `build/static-vcpkg-deps` |
-| plugin host | `PluginABI.h`, `PluginManager`, the render/gameplay hooks | `feature/plugin-capture` |
+| plugin host | `PluginABI.h`, `PluginManager`, the render/gameplay hooks | `pr-upstream-base` |
 
 Neither tree contained the other's code, so "combined" could only be done by copying files between
 them — which is how the two versions drift apart. `combined/gencast-overlay` is instead a merge of
 the two branches, so each feature stays owned by the branch that develops it and the combined tree
 is the only place they meet.
 
-The merge had four conflicts, resolved as:
+`feature/plugin-capture` looks like the obvious partner but is the wrong one: its `PluginABI.h` is
+the older 25 KB header and its `PluginManager` does not implement the host calls the overlay plugin
+makes (`isObjectProjectile`, `getObjectContainerId`, `GOObjectInfo`). `pr-upstream-base` carries the
+same framework 1073 lines further on, and its header is byte-identical to the one the plugin was
+written against - so that is the side that merges, cleanly and without conflicts.
+
+The earlier attempt, against `feature/plugin-capture`, had four conflicts, resolved as:
 
 - **MainMenuUtils.cpp** — the gencast side's removal of the pre-online patch/version check wins.
   This is what keeps Generals Online from prompting for an update on a locally built exe: the check
