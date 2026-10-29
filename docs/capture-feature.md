@@ -12,12 +12,13 @@ the consumer; this file covers only what is in this repository, and links there 
 |---|---|
 | Repo | `nathan-soul/GameClient-PluginFramework` |
 | Branch | `pr-upstream-base`, pushed as `feature/plugin-capture` |
-| Committed tip | `6b3f55a6a` |
+| Committed tip | `df0c2e026` (pushed to `origin/feature/plugin-capture`) |
 | Rebased onto | `92289d416` (upstream, 2026-09-29) — the August base heap-corrupted at startup |
-| Working tree | **modified, uncommitted** — the capture implementation, observed 2026-10-29 20:55 |
+| Working tree | clean, apart from this document |
 
-Version 1 of the ABI is what ships; the capture additions are not committed and have never been
-compiled. Each section says which side of that line it is on.
+Version 1 of the ABI is what ships. The capture additions are committed as `7a8a38d11` and
+`df0c2e026` (2026-10-29, 20:58 and 21:04) and **compile and link** on the build box; no capture has
+ever been taken with them. Each section says which side of that line it is on.
 
 ---
 
@@ -94,9 +95,10 @@ on the box finished `[1006/1006] Linking CXX executable GeneralsMD\Release\Gener
 
 ---
 
-## 3. The capture accessors — PARTIAL, uncommitted
+## 3. The capture accessors — PARTIAL, committed, compiles
 
-Added to the same header, implemented in the same file, **in the working tree only**. Never compiled.
+Added to the same header, implemented in the same file, committed in `7a8a38d11` (warning fixes in
+`df0c2e026`). They compile and link on the box; nothing has exercised them.
 
 ```c
 struct GOMapInfo { char name[64]; int32_t extent[2]; int32_t valid; };          // 76
@@ -113,11 +115,12 @@ struct GOCaptureRequest {
 
 | Function | Behaviour | State |
 |---|---|---|
-| `getLocalPlayerIndex()` | local player index, `-1` when none | **PARTIAL** — uncommitted |
-| `getMapInfo(GOMapInfo*)` | map file stem from `TheGlobalData->m_mapName`, extents from `TheTerrainLogic->getExtent()`; `valid=1` whenever a game is loaded, even with zero extent (the base `TerrainLogic` is a stub) | **PARTIAL** — uncommitted |
-| `getMapObjects(out, max, kindMask, outTotal)` | walks `TheGameLogic`'s **world object list** (so neutral/civilian owners are included), skips dead objects, classifies `KINDOF_STRUCTURE` vs `KINDOF_VEHICLE\|INFANTRY`, projects the position with `worldToScreen`, sets `on_screen` only when inside `TheDisplay`'s width/height | **PARTIAL** — uncommitted |
-| `requestCapture(name)` | `trigger="api"`, no metadata; host samples its own camera and objects | **PARTIAL** — uncommitted |
-| `requestCaptureEx(req)` | copies name, trigger, camera struct and object array into `s_pendingCapture`; refuses when no game or a capture is already pending | **PARTIAL** — uncommitted |
+| `getLocalPlayerIndex()` | local player index, `-1` when none | **PARTIAL** — compiles, never run |
+| `getMapInfo(GOMapInfo*)` | map file stem from `TheGlobalData->m_mapName`, extents from `TheTerrainLogic->getExtent()`; `valid=1` whenever a game is loaded, even with zero extent (the base `TerrainLogic` is a stub) | **PARTIAL** — compiles, never run |
+| `getMapObjects(out, max, kindMask, outTotal)` | walks `TheGameLogic`'s **world object list** (so neutral/civilian owners are included), skips dead objects, classifies `KINDOF_STRUCTURE` vs `KINDOF_VEHICLE\|INFANTRY`, projects the position with `worldToScreen`, sets `on_screen` only when inside `TheDisplay`'s width/height | **PARTIAL** — compiles, never run |
+| `getObjectTemplateName(objectId)` | `ThingTemplate` name for any live object ("AmericaWarFactory"); one static buffer, copy it out immediately | **PARTIAL** — compiles, never run |
+| `requestCapture(name)` | `trigger="api"`, no metadata; host samples its own camera and objects | **PARTIAL** — compiles, never run |
+| `requestCaptureEx(req)` | copies name, trigger, camera struct and object array into `s_pendingCapture`; refuses when no game or a capture is already pending | **PARTIAL** — compiles, never run |
 
 `getMapObjects` is the accessor that makes the feature work at all: `enumeratePlayerObjects` is
 per-player and excludes neutral, so a civilian garrison building would be invisible through it. The
@@ -125,7 +128,7 @@ world list is what "destroy all objects" iterates, and it has no such hole.
 
 ---
 
-## 4. The writer — PARTIAL, uncommitted
+## 4. The writer — PARTIAL, committed, compiles
 
 ### 4.1 A screenshot to a caller-chosen path
 
@@ -184,7 +187,7 @@ it. `camera.roll_deg`, `zoom`, `near`, `far`, `ground_z` are `null`; `forward/ri
 from eye and look-at, not read from a view matrix.
 
 The full key-by-key contract, the three schema decisions and the studio's reader are in
-`overlay-plugin/docs/capture-feature.md` §3.
+`../overlay-plugin/docs/capture-feature.md` §3.
 
 ---
 
@@ -193,12 +196,13 @@ The full key-by-key contract, the three schema decisions and the studio's reader
 `GO_PLUGIN_ABI_VERSION` is **1**, and the loader's only guard is
 `info.abiVersion != GO_PLUGIN_ABI_VERSION` (`PluginManager.cpp:1321`).
 
-Since `6f823ce20`, `getCameraState` has been inserted **mid-table** (after `getScreenSize`); the
-working tree adds `getLocalPlayerIndex` after `isLocalPlayerObserver` and four more after
-`getCameraState`. Every insertion shifts later slots. A plugin built against an older header reports
-ABI 1, passes the check, and calls the wrong pointer: its `getLogicFrame()` lands on
-`getCameraState`, which memsets 60 bytes through an argument the caller never passed. The overlay
-plugin does call `getLogicFrame` (`OverlayPlugin/src/OverlayState.cpp:747`).
+Since `6f823ce20`, `getCameraState` has been inserted **mid-table** (after `getScreenSize`);
+`7a8a38d11` adds `getLocalPlayerIndex` after `isLocalPlayerObserver`, four more after
+`getCameraState`, and `getObjectTemplateName` near the end. Every insertion shifts later slots. A
+plugin built against an older header reports ABI 1, passes the check, and calls the wrong pointer: its
+`getLogicFrame()` lands on `getCameraState`, which memsets 60 bytes through an argument the caller
+never passed. The overlay plugin does call `getLogicFrame`
+(`OverlayPlugin/src/OverlayState.cpp:747`).
 
 Bump the version before any of this is published. The header's own rule says to.
 
@@ -222,7 +226,8 @@ cmake --build --preset win32-vcpkg
 ```
 
 All of it runs from `C:\build\build-capture.bat`, whose first line is the part that matters. Output:
-`build\win32-vcpkg\GeneralsMD\Release\GeneralsOnlineZH_60.exe` (14,426,624 bytes at 20:35).
+`build\win32-vcpkg\GeneralsMD\Release\GeneralsOnlineZH_60.exe` — 14,426,624 bytes at 20:35 (the
+`getCameraState`-only build) and 14,468,096 bytes at 21:04 (from `df0c2e026`, the whole capture).
 
 ### Traps, all three hit for real
 
@@ -247,8 +252,8 @@ All of it runs from `C:\build\build-capture.bat`, whose first line is the part t
 
 ## 7. What is not built
 
-- Nothing here has been compiled since the capture landed; the box's exe predates it.
-- No capture has been taken, so no sidecar has been read back.
+- The framework compiles and links; no capture has been taken, so no sidecar has been read back.
+- The overlay plugin's `CaptureRequest` has not been compiled anywhere — no plugin DLL build exists.
 - `transform` is null, so the projection self-check (F11) does not run.
 - Truncation past 4096 objects is silent — `outTotal` is reported by `getMapObjects` and ignored by
   the writer.
