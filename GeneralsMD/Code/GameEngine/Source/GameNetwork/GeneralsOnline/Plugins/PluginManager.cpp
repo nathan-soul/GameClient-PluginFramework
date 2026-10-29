@@ -500,9 +500,11 @@ namespace
 					ICoord2D screen;
 					if (TheTacticalView->worldToScreen(pos, &screen))
 					{
+						const int viewWidth = (TheDisplay != nullptr) ? (int)TheDisplay->getWidth() : 0;
+						const int viewHeight = (TheDisplay != nullptr) ? (int)TheDisplay->getHeight() : 0;
 						const bool insideViewport = (TheDisplay == nullptr)
 							|| (screen.x >= 0 && screen.y >= 0
-								&& screen.x < TheDisplay->getWidth() && screen.y < TheDisplay->getHeight());
+								&& (int)screen.x < viewWidth && (int)screen.y < viewHeight);
 						if (insideViewport)
 						{
 							info.screen[0] = (int32_t)screen.x;
@@ -516,7 +518,7 @@ namespace
 			info.radius = obj->getGeometryInfo().getBoundingCircleRadius();
 			info.is_structure = isStructure ? 1 : 0;
 			info.complete = isStructure
-				? ((obj->getConstructionPercent() == CONSTRUCTION_COMPLETE) ? 1 : 0)
+				? ((obj->getConstructionPercent() == (Real)CONSTRUCTION_COMPLETE) ? 1 : 0)
 				: 1;
 			++written;
 		}
@@ -1566,7 +1568,7 @@ namespace
 			if (!TheTacticalView->worldToScreen(pos, &screen))
 				continue;
 			if (TheDisplay != nullptr && (screen.x < 0 || screen.y < 0
-				|| screen.x >= TheDisplay->getWidth() || screen.y >= TheDisplay->getHeight()))
+				|| (int)screen.x >= (int)TheDisplay->getWidth() || (int)screen.y >= (int)TheDisplay->getHeight()))
 				continue;
 
 			GarrisonEntry entry;
