@@ -2487,6 +2487,14 @@ bool GOPluginManager::IsLocalPlayerObserver()
 {
 	if (ThePlayerList == nullptr)
 		return false;
+
+	// A replay has no observer slot: every recorded player, including the one the engine makes
+	// local, carries an ordinary player template, so isPlayerObserver() is false and the local
+	// player is alive. Gating on that alone therefore suppressed every plugin callback for the one
+	// mode a capture and a spectator overlay are most used in.
+	if (TheGameLogic != nullptr && TheGameLogic->isInReplayGame())
+		return true;
+
 	Player* localPlayer = ThePlayerList->getLocalPlayer();
 	return (localPlayer != nullptr && (localPlayer->isPlayerObserver() || localPlayer->isPlayerDead())) ? true : false;
 }
