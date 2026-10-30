@@ -487,6 +487,11 @@ struct GOPluginHostAPI
 	// per occupant. Collapse on this id to draw the container once.
 	uint32_t (*getObjectContainerId)(uint32_t objectId);
 
+	// 1 in a local game - skirmish, single player, campaign - where there is no second human for a
+	// plugin to be unfair to. 0 in a LAN or internet match, and outside a game. Plugins run for
+	// observers and in sandbox games; this says which of the two it is.
+	uint8_t (*isSandboxGame)();
+
 	// ------------------------------------------------------------------------------------------------
 	// Capture and annotation additions. APPENDED, never inserted: a plugin built against an earlier
 	// header reads this table as a prefix, so adding a pointer anywhere above the end would shift

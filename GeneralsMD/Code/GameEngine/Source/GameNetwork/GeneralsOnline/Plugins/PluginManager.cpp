@@ -43,8 +43,8 @@ std::vector<GORenderCallbacks> GOPluginManager::s_renderHooks;
 GOPluginManager::NativeHandleProvider GOPluginManager::s_d3dDevice8Provider = nullptr;
 GOPluginManager::NativeHandleProvider GOPluginManager::s_gameWindowProvider = nullptr;
 
-// The free functions the host API table points at. All dispatch is gated on
-// IsLocalPlayerObserver(), so plugins only ever run for observers.
+// The free functions the host API table points at. All dispatch is gated on PluginsAreLive(), so
+// plugins only ever run for observers or in a sandbox game - never in a competitive match.
 namespace
 {
 	void HostAPI_Log(const char* msg)
@@ -141,6 +141,11 @@ namespace
 	// InGameUI's observer stats/notifications gating) - dead also counts as observing, since a dead
 	// player becomes spectator-like. Plugins that display information about other players must gate
 	// on this.
+	uint8_t HostAPI_IsSandboxGame()
+	{
+		return GOPluginManager::IsSandboxGame() ? 1 : 0;
+	}
+
 	uint8_t HostAPI_IsLocalPlayerObserver()
 	{
 		return GOPluginManager::IsLocalPlayerObserver() ? 1 : 0;
@@ -2225,6 +2230,7 @@ GOPluginHostAPI GOPluginManager::BuildHostAPI()
 	api.drawLine2D = HostAPI_DrawLine2D;
 	api.isObjectProjectile = HostAPI_IsObjectProjectile;
 	api.getObjectContainerId = HostAPI_GetObjectContainerId;
+	api.isSandboxGame = HostAPI_IsSandboxGame;
 	return api;
 }
 
@@ -2493,9 +2499,25 @@ bool GOPluginManager::IsLocalPlayerObserver()
 	return (localPlayer != nullptr && (localPlayer->isPlayerObserver() || localPlayer->isPlayerDead())) ? true : false;
 }
 
+bool GOPluginManager::IsSandboxGame()
+{
+	if (TheGameLogic == nullptr || !TheGameLogic->isInGame())
+		return false;
+
+	// GAME_LAN and GAME_INTERNET are the only modes with another human on the other side; a skirmish
+	// or a campaign mission has nobody to cheat against, which is what makes it a place to build an
+	// overlay while the game is running.
+	return TheGameLogic->isInMultiplayerGame() ? false : true;
+}
+
+bool GOPluginManager::PluginsAreLive()
+{
+	return IsLocalPlayerObserver() || IsSandboxGame();
+}
+
 void GOPluginManager::Tick()
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 
 	for (LoadedPlugin& plugin : s_plugins)
@@ -2505,11 +2527,11 @@ void GOPluginManager::Tick()
 	}
 }
 
-// ---- IGameplayEventHooks dispatch. All no-ops unless IsLocalPlayerObserver() - a match
-// participant never receives plugin callbacks. ----
+// ---- IGameplayEventHooks dispatch. All no-ops unless PluginsAreLive() - a match participant in a
+// network game never receives plugin callbacks. ----
 void GOPluginManager::DispatchUnitQueued(const GOUnitEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onUnitQueued != nullptr) cb.onUnitQueued(&ev);
@@ -2517,7 +2539,7 @@ void GOPluginManager::DispatchUnitQueued(const GOUnitEvent& ev)
 
 void GOPluginManager::DispatchUnitCancelled(const GOUnitEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onUnitCancelled != nullptr) cb.onUnitCancelled(&ev);
@@ -2525,7 +2547,7 @@ void GOPluginManager::DispatchUnitCancelled(const GOUnitEvent& ev)
 
 void GOPluginManager::DispatchUnitCompleted(const GOUnitEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onUnitCompleted != nullptr) cb.onUnitCompleted(&ev);
@@ -2533,7 +2555,7 @@ void GOPluginManager::DispatchUnitCompleted(const GOUnitEvent& ev)
 
 void GOPluginManager::DispatchUpgradeQueued(const GOUpgradeEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onUpgradeQueued != nullptr) cb.onUpgradeQueued(&ev);
@@ -2541,7 +2563,7 @@ void GOPluginManager::DispatchUpgradeQueued(const GOUpgradeEvent& ev)
 
 void GOPluginManager::DispatchUpgradeCancelled(const GOUpgradeEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onUpgradeCancelled != nullptr) cb.onUpgradeCancelled(&ev);
@@ -2549,7 +2571,7 @@ void GOPluginManager::DispatchUpgradeCancelled(const GOUpgradeEvent& ev)
 
 void GOPluginManager::DispatchUpgradeCompleted(const GOUpgradeEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onUpgradeCompleted != nullptr) cb.onUpgradeCompleted(&ev);
@@ -2557,7 +2579,7 @@ void GOPluginManager::DispatchUpgradeCompleted(const GOUpgradeEvent& ev)
 
 void GOPluginManager::DispatchBuildingDestroyed(const GOBuildingEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onBuildingDestroyed != nullptr) cb.onBuildingDestroyed(&ev);
@@ -2565,7 +2587,7 @@ void GOPluginManager::DispatchBuildingDestroyed(const GOBuildingEvent& ev)
 
 void GOPluginManager::DispatchSpecialPowerTriggered(const GOSpecialPowerEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onSpecialPowerTriggered != nullptr) cb.onSpecialPowerTriggered(&ev);
@@ -2573,7 +2595,7 @@ void GOPluginManager::DispatchSpecialPowerTriggered(const GOSpecialPowerEvent& e
 
 void GOPluginManager::DispatchObjectDamaged(const GOCombatEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onObjectDamaged != nullptr) cb.onObjectDamaged(&ev);
@@ -2581,17 +2603,17 @@ void GOPluginManager::DispatchObjectDamaged(const GOCombatEvent& ev)
 
 void GOPluginManager::DispatchObjectHealed(const GOCombatEvent& ev)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GOGameplayEventCallbacks& cb : s_gameplayEventHooks)
 		if (cb.onObjectHealed != nullptr) cb.onObjectHealed(&ev);
 }
 
-// ---- IRenderHooks dispatch. Same observer gate as the gameplay events. ----
+// ---- IRenderHooks dispatch. Same gate as the gameplay events: observer or sandbox. ----
 
 void GOPluginManager::DispatchDrawOverlay()
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GORenderCallbacks& cb : s_renderHooks)
 		if (cb.onDrawOverlay != nullptr) cb.onDrawOverlay();
@@ -2599,7 +2621,7 @@ void GOPluginManager::DispatchDrawOverlay()
 
 void GOPluginManager::DispatchRawKeyUp(uint32_t scanCode, uint32_t modifierFlags)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GORenderCallbacks& cb : s_renderHooks)
 		if (cb.onRawKeyUp != nullptr) cb.onRawKeyUp(scanCode, modifierFlags);
@@ -2607,7 +2629,7 @@ void GOPluginManager::DispatchRawKeyUp(uint32_t scanCode, uint32_t modifierFlags
 
 void GOPluginManager::DispatchMouseMove(int32_t x, int32_t y)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GORenderCallbacks& cb : s_renderHooks)
 		if (cb.onMouseMove != nullptr) cb.onMouseMove(x, y);
@@ -2615,7 +2637,7 @@ void GOPluginManager::DispatchMouseMove(int32_t x, int32_t y)
 
 void GOPluginManager::DispatchMouseButtonDown(uint8_t buttonIndex, int32_t x, int32_t y, uint32_t modifierFlags)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GORenderCallbacks& cb : s_renderHooks)
 		if (cb.onMouseButtonDown != nullptr) cb.onMouseButtonDown(buttonIndex, x, y, modifierFlags);
@@ -2623,7 +2645,7 @@ void GOPluginManager::DispatchMouseButtonDown(uint8_t buttonIndex, int32_t x, in
 
 void GOPluginManager::DispatchMouseButtonUp(uint8_t buttonIndex, int32_t x, int32_t y, uint32_t modifierFlags)
 {
-	if (!IsLocalPlayerObserver())
+	if (!PluginsAreLive())
 		return;
 	for (GORenderCallbacks& cb : s_renderHooks)
 		if (cb.onMouseButtonUp != nullptr) cb.onMouseButtonUp(buttonIndex, x, y, modifierFlags);

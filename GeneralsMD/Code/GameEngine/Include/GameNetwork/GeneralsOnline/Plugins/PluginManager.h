@@ -28,6 +28,14 @@ public:
 	// during a live match: that would be an information advantage for a participant.
 	static bool IsLocalPlayerObserver();
 
+	// A local game: skirmish, single player, campaign. GAME_LAN and GAME_INTERNET are the only modes
+	// that put another human on the other side, and those are never sandbox.
+	static bool IsSandboxGame();
+
+	// Whether plugin callbacks run at all: an observer (the audience the overlay was built for) or a
+	// sandbox game (somewhere to build one without an opponent). Never a live competitive match.
+	static bool PluginsAreLive();
+
 	// ---- IGameplayEventHooks dispatch (called from ProductionUpdate/SpecialPowerModule/etc) ----
 	static bool HasGameplayEventHooks() { return !s_gameplayEventHooks.empty(); }
 	static void DispatchUnitQueued(const GOUnitEvent& ev);
