@@ -95,6 +95,29 @@ dropping any query string on the way to the browser. Both were observed, not ass
 If the bind fails the plugin still loads and F2 falls back to the `file://` page, which works but can
 only write presets in a Chromium browser.
 
+## The live backdrop
+
+Press F2, keep the configurator open, and the stage follows the game: the plugin writes a frame to
+`%LOCALAPPDATA%\OverlayPlugin\live.bmp` and the page polls `GET /live.bmp` every 2 s.
+
+It is deliberately stingy, because every frame costs a back-buffer copy:
+
+- nothing is captured until **F2** has been pressed this session;
+- nothing is captured unless the **camera moved** (eye position, look-at target and FOV, compared
+  with the previous frame) - a still camera writes nothing;
+- nothing is captured when **nobody asks**: `/live.bmp` not fetched for 15 s stands the loop down, so
+  a closed tab costs nothing;
+- at most one frame every 2 s.
+
+The frame is taken at the top of the render callback, before ImGui draws, so it is the game *without*
+the overlay - the studio draws its own overlay on top, which is the point. It is written as a 32-bit
+BMP because D3D8's `A8R8G8B8` is already BGRA and an encoder would be a dependency for a file that is
+overwritten every two seconds; a temp name plus `MoveFileEx` keeps the server from serving a
+half-written frame.
+
+The `live` toggle beside the backdrop controls turns the polling off; picking your own backdrop takes
+the stage back on its own.
+
 ## When it dies right after login
 
 A combined build once killed the process the instant Online was pressed, after `LOGIN: Logged in`
