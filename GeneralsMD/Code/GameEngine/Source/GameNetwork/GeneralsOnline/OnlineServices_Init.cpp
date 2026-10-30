@@ -850,9 +850,7 @@ void NGMP_OnlineServicesManager::OnLogin(ELoginResult loginResult, const char* s
 		NGMP_OnlineServices_AuthInterface* pAuthInterface = NGMP_OnlineServicesManager::GetInterface<NGMP_OnlineServices_AuthInterface>();
 		if (pAuthInterface != nullptr)
 		{
-			NetworkLog(ELogVerbosity::LOG_RELEASE, "[DIAG] OnLogin: before NetworkMeshLibrary::EnsureInitialized");
 			NetworkMeshLibrary::EnsureInitialized(pAuthInterface->GetUserID());
-			NetworkLog(ELogVerbosity::LOG_RELEASE, "[DIAG] OnLogin: after NetworkMeshLibrary::EnsureInitialized");
 		}
 
 		// A player who only ever watches has no other way to reach the relay: it never hosts, so
@@ -862,9 +860,7 @@ void NGMP_OnlineServicesManager::OnLogin(ELoginResult loginResult, const char* s
 		// the fact that this client is in direct mode - and it is reached before the menus that
 		// lead to Watch Live. Fire-and-forget: it sends from a worker and settles for a log line,
 		// so no outcome of it can hold up a login, a menu or a game. No-op outside direct mode.
-		NetworkLog(ELogVerbosity::LOG_RELEASE, "[DIAG] OnLogin: before GencastRegisterWatcher");
 		GencastRegisterWatcher();
-		NetworkLog(ELogVerbosity::LOG_RELEASE, "[DIAG] OnLogin: after GencastRegisterWatcher");
 
 		// Tear down any previous session's websocket before replacing it.
 		if (m_pWebSocket != nullptr)
@@ -882,7 +878,6 @@ void NGMP_OnlineServicesManager::OnLogin(ELoginResult loginResult, const char* s
 		// TODO_NGMP: This should come from the service, if the service was russia-aware
 		std::string strWebsocketAddr = NGMP_OnlineServicesManager::Settings.Network_UseAlternativeEndpoint() ? "wss://api-ru.playgenerals.online/ws" : std::string(szWSAddr);
 
-        NetworkLog(ELogVerbosity::LOG_RELEASE, "[DIAG] OnLogin: connecting websocket to %s", strWebsocketAddr.c_str());
         m_pWebSocket->Connect(strWebsocketAddr.c_str(), false, [=]()
             {
                 // Get friends list and blocked list
