@@ -118,7 +118,11 @@ if (Test-Path $harness) {
     Copy-Item $harness (Join-Path $verify 'host_test.exe') -Force
     Push-Location $verify
     try {
+        # The server is a sandbox feature now: F2 starts it, and the harness has no game to be in and no
+        # key to press. This env seam is the only way to check the socket half without one.
+        $env:OVERLAY_CONFIGURATOR_TEST_SERVER = '1'
         $out = & .\host_test.exe 2>&1 | Out-String
+        Remove-Item Env:\OVERLAY_CONFIGURATOR_TEST_SERVER -ErrorAction SilentlyContinue
         if ($out -notmatch 'INIT_OK') { Fail "the installed plugin did not initialize" }
         Write-Output ("   " + (($out -split "`n" | Where-Object { $_ -match 'plugin: name|INIT_' }) -join ' | ').Trim())
 

@@ -28,11 +28,21 @@ scp -q "$TAR" "$HOST:C:/build/overlay-plugin.tar.gz"
 scp -q "$OVERLAY/tools/deploy/sync.ps1" "$HOST:C:/build/sync-overlay.ps1"
 $RUN 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\build\sync-overlay.ps1' | tail -1
 
+# The plugin compiles against the engine's PluginABI.h, so the engine repo has to be current before
+# the plugin builds - otherwise a new ABI field is invisible and the build fails on a stale header.
+echo "— updating the engine tree"
+$RUN 'cmd /c "cd /d C:\build\plugin-capture && git fetch -q gh combined/gencast-overlay && git checkout -q -B combined/gencast-overlay gh/combined/gencast-overlay && echo ENGINE_TREE_OK"' | grep -E 'ENGINE_TREE_OK|WRONG_BRANCH'
+
 echo "— building the plugin against the engine's ABI"
 $RUN 'cmd /c "cd /d C:\build\overlay-plugin-capture && tools\build-windows.bat C:\build\plugin-capture"' | grep -E 'CONFIGURE_EXIT|BUILD_EXIT|BUILD_OK|NO_ABI'
 
 echo "— building the combined exe"
 $RUN 'cmd /c "cd /d C:\build\plugin-capture && git fetch -q gh combined/gencast-overlay && git checkout -q -B combined/gencast-overlay gh/combined/gencast-overlay && tools\combined\build-combined.bat"' | grep -E 'BRANCH|CONFIGURE_EXIT|BUILD_EXIT|BUILD_OK|WRONG_BRANCH'
+
+# The ABI check runs a mock host whose structSize comes from its own copy of PluginABI.h; refresh it
+# after every engine build, or a grown ABI looks like a plugin that refuses to load.
+echo "— refreshing the ABI test harness"
+$RUN 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\build\refresh-harness.ps1' | grep -E 'HARNESS_REFRESHED|error'
 
 echo "— checking the plugin against the host ABI"
 $RUN 'cmd /c C:\build\run-host-test.bat' | grep -E 'plugin: name|INIT_OK|SHUTDOWN_OK'
