@@ -75,6 +75,26 @@ The overlay plugin repo no longer carries a copy; its CMake takes `GENCAST_ENGIN
 What it cannot check from a headless box: that the game itself starts and loads the plugin. The log
 line to look for is `[Plugin] Loaded OverlayPlugin v…` in `GeneralsOnline.log`.
 
+## The configurator is served, not opened from disk
+
+`plugins\OverlayPlugin\configurator\` is served by the plugin itself on `127.0.0.1:<ephemeral>` while
+the game runs. F2 opens `http://127.0.0.1:<port>/?t=<token>` in the default browser, and the page
+reads and writes the client's presets over HTTP.
+
+That is not a convenience: a page opened from `file://` can only write to a folder through the File
+System Access API, which Firefox does not have, and the shell resolves a `file:///` URL to a path —
+dropping any query string on the way to the browser. Both were observed, not assumed.
+
+- The token is generated per launch and logged with the URL (`OverlayPlugin: configurator at …`), so
+  the page can also be reached by hand when no browser opens.
+- `GET /?t=<token>` sets an `HttpOnly; SameSite=Strict` cookie; every later request must carry it.
+- Only `*.ini` names directly in the presets folder are reachable; names are validated, not
+  sanitised. Routing is `src/ConfiguratorRoute.cpp` and is unit-tested on Linux
+  (`tests/server_route.test.cpp`); `src/ConfiguratorServer.cpp` is the socket loop around it.
+
+If the bind fails the plugin still loads and F2 falls back to the `file://` page, which works but can
+only write presets in a Chromium browser.
+
 ## When it dies right after login
 
 A combined build once killed the process the instant Online was pressed, after `LOGIN: Logged in`

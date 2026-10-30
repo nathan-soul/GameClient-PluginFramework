@@ -81,6 +81,20 @@ New-Item -ItemType Directory -Path $configurator | Out-Null
 Copy-Item (Join-Path $studio '*') $configurator -Recurse -Force
 Write-Output ("   " + (Get-ChildItem $configurator -Recurse -File).Count + " files")
 
+# The page has to name the presets folder, and "Documents" is not a fixed name: it is localized,
+# can be renamed, and is often redirected to OneDrive. So ask Windows for the known folder - the same
+# source the game uses (SHGetKnownFolderPath / CSIDL_PERSONAL) - and write it beside the page. The
+# game overrides this at runtime with ?presets=, which is the only truly authoritative answer.
+Step "recording where the client keeps presets"
+$leaf = 'Command and Conquer Generals Zero Hour Data'
+$documents = [Environment]::GetFolderPath('MyDocuments')
+if ([string]::IsNullOrWhiteSpace($documents)) { Fail "Windows did not report a Documents folder" }
+$presetsDir = Join-Path (Join-Path $documents $leaf) 'OverlayPlugin\presets'
+$asJson = $presetsDir | ConvertTo-Json -Compress
+Set-Content -Path (Join-Path $configurator 'presets-path.js') -Encoding UTF8 `
+    -Value "// Written by the installer: the folder Windows reports for Documents, plus the client's leaf.`n// The game replaces it at runtime with ?presets=, which is authoritative.`nwindow.OVERLAY_PRESETS_DIR = $asJson;`n"
+Write-Output ("   " + $presetsDir)
+
 Step "checking the configurator's files"
 $html = Get-Content (Join-Path $configurator 'index.html') -Raw
 $refs = [regex]::Matches($html, '"(assets|schema)/[^"]+"') | ForEach-Object { $_.Value.Trim('"') } | Sort-Object -Unique
@@ -88,6 +102,12 @@ foreach ($ref in $refs) {
     if (-not (Test-Path (Join-Path $configurator ($ref -replace '/', '\')))) { Fail "the page asks for $ref, which was not installed" }
 }
 Write-Output ("   " + $refs.Count + " references resolved")
+$presetsPath = Join-Path $configurator 'presets-path.js'
+if (-not (Test-Path $presetsPath)) { Fail "the page's presets folder was not recorded" }
+$written = Get-Content $presetsPath -Raw
+if ($written -notmatch 'OVERLAY_PRESETS_DIR\s*=\s*"') { Fail "presets-path.js does not define OVERLAY_PRESETS_DIR" }
+if ($written -notmatch 'OverlayPlugin\\\\presets') { Fail "presets-path.js does not point at OverlayPlugin\presets" }
+Write-Output "   presets folder recorded for the page"
 
 Step "loading the installed plugin against the ABI"
 $verify = Join-Path $env:TEMP 'overlay-verify-combined'
@@ -101,6 +121,14 @@ if (Test-Path $harness) {
         $out = & .\host_test.exe 2>&1 | Out-String
         if ($out -notmatch 'INIT_OK') { Fail "the installed plugin did not initialize" }
         Write-Output ("   " + (($out -split "`n" | Where-Object { $_ -match 'plugin: name|INIT_' }) -join ' | ').Trim())
+
+        # The configurator is served from the plugin, so a build that cannot bind loopback would
+        # silently fall back to the file:// page - which cannot write presets in every browser.
+        # The line is only logged once bind+listen succeeded; host_test exits immediately, so the
+        # HTTP side is exercised by tests/server_route.test.cpp and the deploy's own e2e run.
+        $served = [regex]::Match($out, 'configurator at http://127\.0\.0\.1:(\d+)/\?t=[0-9a-f]{32}')
+        if (-not $served.Success) { Fail "the installed plugin did not start its configurator server" }
+        Write-Output ("   configurator server listening on port " + $served.Groups[1].Value)
     } finally { Pop-Location }
 } else {
     Write-Output "   no host_test.exe; skipped"
