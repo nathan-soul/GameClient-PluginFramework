@@ -18,7 +18,9 @@ TAR=/tmp/overlay-plugin.tar.gz
 
 echo "— bundling and packaging the studio"
 python3 "$OVERLAY/tools/bundle.py" >/dev/null
-python3 "$OVERLAY/tools/package.py" | head -1
+# No pipe: package.py writes one line per file and a short-lived reader (head) kills it with
+# BrokenPipeError halfway through the copy.
+python3 "$OVERLAY/tools/package.py" >/dev/null
 
 echo "— syncing the plugin tree to $HOST"
 tar -C "$OVERLAY" --exclude=.git --exclude=build --exclude=__pycache__ --exclude=docs -czf "$TAR" .
