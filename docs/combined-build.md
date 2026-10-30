@@ -133,6 +133,22 @@ half-written frame.
 
 The `live` toggle beside the backdrop controls turns the polling off; picking your own backdrop takes
 the stage back on its own.
+The dots travel with the frame. `live.json` is written beside `live.bmp` with every on-screen structure
+and unit - id, template, screen point, world point, owner, complete - in the shape the studio already
+reads from a capture sidecar, so a command centre cannot slide to a corner while its marker stays put.
+A building with no category still gets a dot: the dot is a position, not a classification.
+
+Two things the studio now takes from the frame rather than from a preset:
+
+- **resolution** - the stage becomes the size the client actually renders at, and a size that is not in
+  the preset list is added to it, so layout is never done against a resolution the game will not use;
+- **mark scale** - `ResolutionScale(width)` (0.7 to 2.0 against a 1920 reference), published to CSS as
+  `--res-scale`, so a 1440 stage draws its marks at the size the overlay would.
+
+When the frame is not exactly the stage's size the browser letterboxes it, and the dots go through the
+same contain transform instead of sitting at raw image pixels.
+
+
 
 ## When it dies right after login
 
