@@ -1175,17 +1175,6 @@ set(GAMEENGINE_SRC
     Include/GameNetwork/GeneralsOnline/Plugins/PluginManager.h
     Include/GameNetwork/GeneralsOnline/Plugins/PluginABI.h
     Include/GameNetwork/GeneralsOnline/Plugins/PluginManager.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/isteamnetworkingmessages.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/isteamnetworkingsockets.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/isteamnetworkingutils.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steam_api_common.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamclientpublic.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamnetworkingcustomsignaling.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamnetworkingsockets.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamnetworkingsockets_flat.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamnetworkingtypes.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamtypes.h
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/steamuniverse.h
     Include/GameNetwork/GeneralsOnline/Vendor/sentry/sentry.h
     Include/GameNetwork/GeneralsOnline/Vendor/libcurl/curl.h
     Include/GameNetwork/GeneralsOnline/Vendor/libcurl/curlver.h
@@ -1244,9 +1233,6 @@ target_include_directories(z_gameengine PUBLIC
     Include
 
     Include/GameNetwork/GeneralsOnline/Vendor/
-    # The Steam networking headers are included as <steam/...> but live under
-    # Vendor/ValveNetworkingSockets/steam; this makes both spellings resolve.
-    Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets
 )
 
 target_include_directories(z_gameengine PRIVATE
