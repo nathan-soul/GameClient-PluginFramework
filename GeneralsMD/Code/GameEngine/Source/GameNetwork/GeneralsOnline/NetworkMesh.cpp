@@ -619,6 +619,7 @@ bool NetworkMeshLibrary::EnsureInitialized(int64_t userID)
 		return false;
 	}
 
+	NetworkLog(ELogVerbosity::LOG_RELEASE, "[DIAG] EnsureInitialized: calling GameNetworkingSockets_Init for user %lld", (long long)userID);
 	SteamDatagramErrMsg errMsg;
 	if (!GameNetworkingSockets_Init(&identityLocal, errMsg))
 	{
@@ -627,6 +628,7 @@ bool NetworkMeshLibrary::EnsureInitialized(int64_t userID)
 	}
 
 	s_bInitialized = true;
+	NetworkLog(ELogVerbosity::LOG_RELEASE, "[DIAG] EnsureInitialized: GameNetworkingSockets_Init returned true");
 
 	// Every STUN entry must resolve to a distinct address, or the native ICE client retries
 	// duplicates forever.
@@ -648,6 +650,7 @@ bool NetworkMeshLibrary::EnsureInitialized(int64_t userID)
 
 	SteamNetworkingUtils()->SetGlobalCallback_SteamNetConnectionStatusChanged(OnSteamNetConnectionStatusChanged);
 
+	NetworkLog(ELogVerbosity::LOG_RELEASE, "[DIAG] EnsureInitialized: config applied, returning true");
 	return true;
 }
 
