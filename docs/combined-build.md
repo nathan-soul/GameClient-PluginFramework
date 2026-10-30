@@ -95,6 +95,22 @@ dropping any query string on the way to the browser. Both were observed, not ass
 If the bind fails the plugin still loads and F2 falls back to the `file://` page, which works but can
 only write presets in a Chromium browser.
 
+## Plugins run for observers and in sandbox games
+
+Every plugin dispatch - draw, keys, mouse, gameplay events, tick - goes through
+`GOPluginManager::PluginsAreLive()`: true for a local player who is an observer or dead, and true in a
+sandbox game. A sandbox is a local game: `GameLogic::isInMultiplayerGame()` is false, which is every
+mode except `GAME_LAN` and `GAME_INTERNET`. A network match is unchanged, so there is still no way for
+a plugin to see a match someone else is playing in.
+
+`isSandboxGame()` is exposed through the ABI for plugins that need to say which of the two they are in.
+
+The configurator is stricter still: **sandbox only**. The HTTP server does not start at load - F2
+starts it, and F2 refuses outside a sandbox game (`OverlayPlugin: F2 - the configurator is sandbox
+only`). The presets folder is the caster's, and a match in progress is not the place to open a server
+or hand it out. `OVERLAY_CONFIGURATOR_TEST_SERVER=1` starts it at load instead, for the ABI harness,
+which has no keyboard and no game.
+
 ## The live backdrop
 
 Press F2, keep the configurator open, and the stage follows the game: the plugin writes a frame to
