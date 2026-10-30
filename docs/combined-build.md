@@ -74,3 +74,44 @@ The overlay plugin repo no longer carries a copy; its CMake takes `GENCAST_ENGIN
 
 What it cannot check from a headless box: that the game itself starts and loads the plugin. The log
 line to look for is `[Plugin] Loaded OverlayPlugin v…` in `GeneralsOnline.log`.
+
+## When it dies right after login
+
+A combined build once killed the process the instant Online was pressed, after `LOGIN: Logged in`
+and one Steam networking line. The method that found it, in the order that paid off:
+
+1. **Read the log, not the symptom.** `Documents\Command and Conquer Generals Zero Hour Data\GeneralsOnlineData\GeneralsOnline.log`.
+   `NetworkLog` opens, writes and closes per line, so nothing is lost to buffering: the last line
+   really is where it died.
+2. **Compare with a working run.** The same log from the previous exe went `LOGIN: Logged in` →
+   `[WebSocket] Connected`. The new one logged a Steam networking warning in between and stopped —
+   that gap is the whole bug.
+3. **A/B the previous exe** (`swap-exe.ps1`): if the old one works, the regression is in what
+   changed, and the search space collapses to the merge plus the build configuration.
+4. **Disable the plugin by renaming the DLL** to `.off`. It still crashed, which cleared the plugin
+   in one launch instead of a debugging session.
+5. **Do not rely on WER.** `LocalDumps` for the exe was configured and wrote nothing, and no
+   Application Error event appeared either. Installing **procdump as the AeDebug postmortem
+   debugger** (`procdump64 -ma -i <folder>`) catches what WER drops.
+6. **Instrument the gap.** Five `NetworkLog` lines bracketing each call between the last good line
+   and the death (`EnsureInitialized`, the watcher registration, the websocket connect) named the
+   call — the crash was one call *after* the last of them, inside the Steam networking library.
+
+### The cause, because it will happen again
+
+The tree carries `Include/GameNetwork/GeneralsOnline/Vendor/ValveNetworkingSockets/steam/*.h` — a
+copy of the Steam networking headers — while the library itself comes from vcpkg
+(`GameNetworkingSockets::GameNetworkingSockets_s`). They are **different versions**, and the copy's
+`SteamNetworkingConfigValue_t::SetString` tags the value `k_ESteamNetworkingConfig_Ptr` where the
+library expects `k_ESteamNetworkingConfig_String`. An include directory that made `<steam/...>`
+resolve to the copy therefore handed `CreateListenSocketP2P` its TURN server/user/pass as pointers,
+the library read them as strings, logged `FakeIP allocation requires Steam` and died.
+
+The copy is gone; `<steam/...>` now resolves through the imported target, so the headers are the ones
+the library was built from. Two rules follow:
+
+- **Never add an include directory that can shadow a dependency's own headers.** Link the target and
+  let it supply them.
+- **A vendored copy of a library's headers is a liability**, not a convenience: it compiles, links
+  and then misreads its arguments at runtime. If a header must be vendored, it has to be diffed
+  against the version the linked library ships.
